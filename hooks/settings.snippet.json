@@ -1,0 +1,86 @@
+{
+  "_lazarus_snippet": {
+    "what_this_is": "Copy-paste Claude Code settings.json fragment that wires Lazarus/Sonar into the three deterministic placements: a SessionStart Sonar sweep, a Stop + PostToolUse retro-audit, and an optional PreToolUse gate. This whole '_lazarus_snippet' object is documentation only - Claude Code ignores keys it does not recognize, so leaving it in place is harmless, but the block you actually merge is 'hooks' below.",
+    "how_to_install": [
+      "1. Set the hooks path prefix. Replace every occurrence of {{LAZARUS_HOME}} in this file with the absolute path to the directory that holds session_start_sweep.py and retro_audit.py (the repo's hooks/ directory). Use forward slashes on every OS - Claude Code accepts them on Windows too. Example: C:/tools/lazarus/hooks or /home/you/lazarus/hooks.",
+      "2. Set the config path. Replace {{LAZARUS_CONFIG_FILE}} in the 'env' block below with the absolute path to YOUR lazarus.config.toml. Forward slashes on every OS. Do NOT assume the config sits one directory above hooks/ - it can live anywhere; point LAZARUS_CONFIG at it explicitly. Example: C:/tools/lazarus/lazarus.config.toml or /home/you/lazarus/lazarus.config.toml. See INSTALL_HOOKS.md for the full walkthrough.",
+      "3. Merge the 'hooks' object below into your ~/.claude/settings.json (or a project .claude/settings.json). If you already have a 'hooks' key, merge per event: append the Lazarus entry to the existing SessionStart / Stop / PostToolUse / PreToolUse arrays rather than replacing them. Each event value is an array, so appending one more matcher-group object is always safe.",
+      "4. How the config is discovered. Each hook reads lazarus.config.toml. The reliable path is the LAZARUS_CONFIG env var set in step 2 (present in the 'env' block below). If you leave LAZARUS_CONFIG unset, the hooks fall back to discovering lazarus.config.toml by walking up from the current working directory (find_config_path) - but the env var is the dependable path and is the one INSTALL_HOOKS.md tells you to set. Either way there is NO silent fallback to scanning your home directory, and a missing corpus.path or globs is a hard error (fail-loud).",
+      "5. Set ANTHROPIC_API_KEY in your environment for the Stop/PostToolUse retro-audit (the Lazarus judge). The SessionStart sweep is pure SONAR and needs no key. If the key is missing, the retro-audit prints a visible stderr error and exits without blocking your turn - it never wedges the session.",
+      "6. The PreToolUse gate is OPT-IN and commented-out-by-default (it lives under '_optional_pretooluse_gate' below, not under 'hooks'). It is the riskiest placement because it runs a judge call before a Write/Edit/Agent action. Only move it into 'hooks'.'PreToolUse' after reading INSTALL_HOOKS.md and deciding you want surface-and-judge before those actions. See '_optional_pretooluse_gate' for the ready-to-paste block."
+    ],
+    "fail_loud_contract": [
+      "SessionStart (session_start_sweep.py): on missing config / missing corpus.path / missing globs / unreadable last-session work-unit, it prints a visible stderr error and exits non-zero. It does not silently emit empty output.",
+      "Stop and PostToolUse (retro_audit.py): same fail-loud on missing config/corpus/unparseable work-unit. The one deliberate carve-out: a judge/model/network error (including a missing ANTHROPIC_API_KEY at judge time) is printed loudly to stderr and the hook exits WITHOUT blocking the turn - it emits nothing on the Stop event's additionalContext channel (that channel is rejected on Stop), so a broken judge never wedges the session.",
+      "PreToolUse gate (optional): same fail-loud on config/corpus problems; a judge error surfaces loudly and defaults to allowing the action rather than blocking it."
+    ],
+    "placement_rationale": {
+      "SessionStart": "Runs a SONAR sweep over the last session's work-unit and prints buried-rule candidates as boot context. Wide, cheap, high-recall - the firehose stage. No judge, no API key.",
+      "Stop": "Runs the LAZARUS retro-audit on the just-finished response (the work-unit). This is the precision stage: it filters SONAR candidates through the would-it-have-changed-the-output judge and prints only surviving retroactive-fixes. It PROPOSES; it never edits files.",
+      "PostToolUse (matcher Edit|Write|NotebookEdit)": "Runs the same retro-audit against a just-written diff, so a buried rule can be surfaced against the concrete change rather than the whole turn.",
+      "PreToolUse (matcher Write|Edit|Agent, optional)": "Surfaces-and-judges relevant buried rules BEFORE the action. Highest value, highest risk - it can block. Ships opt-in."
+    },
+    "timeouts_note": "Timeouts are in SECONDS (Claude Code convention). SessionStart sweep is keyword-only and fast (20s cap). The retro-audit and the optional gate make one batched judge call, so they get a longer budget (60s / 45s). Tune to your corpus size and judge_model."
+  },
+
+  "env": {
+    "LAZARUS_CONFIG": "{{LAZARUS_CONFIG_FILE}}"
+  },
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python {{LAZARUS_HOME}}/session_start_sweep.py",
+            "timeout": 20,
+            "statusMessage": "Lazarus SONAR: sweeping buried rules over last session's work..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python {{LAZARUS_HOME}}/retro_audit.py --kind response",
+            "timeout": 60,
+            "statusMessage": "Lazarus retro-audit: would any buried rule have changed this turn?"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python {{LAZARUS_HOME}}/retro_audit.py --kind diff",
+            "timeout": 60,
+            "statusMessage": "Lazarus retro-audit: checking the just-written diff against buried rules..."
+          }
+        ]
+      }
+    ]
+  },
+
+  "_optional_pretooluse_gate": {
+    "note": "OPT-IN. To enable the gate, cut the 'PreToolUse' object below and paste it as a sibling of 'SessionStart' / 'Stop' / 'PostToolUse' inside the real 'hooks' object above. It runs retro_audit.py in gate mode (surface-and-judge before the action). It can block on a would-change verdict; a judge error defaults to allow, never to block. Read INSTALL_HOOKS.md first.",
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python {{LAZARUS_HOME}}/retro_audit.py --gate --kind pending",
+            "timeout": 45,
+            "statusMessage": "Lazarus gate: surfacing and judging buried rules before this action..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+# ============================================================================
+# Lazarus + Sonar — demo configuration
+# ============================================================================
+#
+# This is the config the runnable demo uses. It is a real, minimal
+# lazarus.config.toml pointed at the three-rule corpus that ships next to it.
+# `run_demo.py` loads it with the ordinary `config.load_config`, so this file
+# also doubles as a worked example of the config format.
+#
+# Relative paths resolve against THIS file's directory (examples/demo/), which
+# is why `path = "./corpus"` and `path = ".lazarus/ledger.jsonl"` work no matter
+# what directory you run the demo from.
+# ============================================================================
+
+[corpus]
+# The three demo rule files live here, one directory down.
+path = "./corpus"
+# Every markdown file under the corpus counts as a rule.
+globs = ["**/*.md"]
+# Nothing to exclude in this tiny corpus.
+exclude = []
+
+[sonar]
+# High-recall firehose settings (see DECISION D-1 in the interface contract).
+# A low positive floor drops pure-noise zero-overlap files while staying wide;
+# precision is Lazarus's job, not this floor's.
+top_n = 20
+min_score = 0.05
+# Structural boosts. A rule whose filename echoes the work (e.g.
+# "no-secrets-in-logs.md" vs a diff mentioning "secret"/"log") gets lifted.
+title_boost = 2.0
+path_boost = 1.5
+
+[judge]
+# The judge model the REAL pipeline would use. The demo does not call it — it
+# injects the offline stub judge instead (see stub_judge.py / run_demo.py) — so
+# this value is documentation of the production default, not something the demo
+# reaches for. Running the demo needs no API key.
+model = "claude-opus-4-8"
+# A would_change=true verdict must clear this confidence to surface. The stub
+# judge returns 0.9 for the two actionable rules (well above 0.6) and 0.2 for
+# the inert one, so the confidence gate is exercised, not bypassed.
+min_confidence = 0.6
+
+[ledger]
+# Append-only JSONL, relative to this file's directory. run_demo.py deletes any
+# prior ledger before running so the demo is reproducible: a stale DECLINED
+# entry from an earlier run would otherwise suppress a candidate (the anti-nag
+# property working correctly, but not what you want when re-running a demo).
+path = ".lazarus/ledger.jsonl"

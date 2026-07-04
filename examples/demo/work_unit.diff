@@ -1,0 +1,28 @@
+diff --git a/service/upstream.py b/service/upstream.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/service/upstream.py
++++ b/service/upstream.py
+@@ -1,10 +1,28 @@
+ import logging
+ import requests
+
+ logger = logging.getLogger(__name__)
+
+
+-def fetch_profile(user_id):
+-    return {"id": user_id}
++def fetch_profile(user_id, api_key):
++    # Build the request URL and headers for the upstream profile service.
++    url = f"https://api.example.com/v1/users/{user_id}/profile"
++    headers = {"authorization": f"Bearer {api_key}"}
++
++    # Log what we are about to do so the call is traceable in production.
++    logger.info(f"fetching profile for user {user_id} with api key {api_key}")
++
++    # Call the external profile service and return the parsed JSON body.
++    response = requests.get(url, headers=headers)
++    response.raise_for_status()
++    data = response.json()
++
++    logger.info(f"fetched profile for user {user_id}: {len(data)} fields")
++    return data

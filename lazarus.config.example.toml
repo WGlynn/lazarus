@@ -1,0 +1,232 @@
+# ============================================================================
+# Lazarus + Sonar: example configuration
+# ============================================================================
+#
+# Copy this file to `lazarus.config.toml` (in your project root, or wherever
+# you point --config at) and edit the values for your own corpus. Nothing in
+# here is hardcoded to a particular project; the defaults below are neutral
+# placeholders that you MUST replace with a real corpus path before the tool
+# will run.
+#
+# What this file configures:
+#   [corpus]  where your rules/memory/primitives live, and which files count
+#   [sonar]   how the wide, cheap keyword search ranks candidate rules
+#   [judge]   the precision filter: which judge model runs, and its thresholds
+#   [ledger]  where the append-only SURFACED / ACTIONED / DECLINED log is kept
+#
+# Fail-loud contract: if [corpus].path or [corpus].globs is missing, the tool
+# raises a clear error and exits non-zero. There is NO silent fallback to
+# scanning your home directory or the current working directory. This is
+# deliberate: a knowledge audit that quietly points at the wrong corpus is
+# worse than one that refuses to start.
+#
+# TOML is parsed with the stdlib `tomllib` on Python 3.11+. On 3.9-3.10 the
+# tool uses the `tomli` backport, which `pip install lazarus-sonar` installs
+# automatically as a base dependency (it is version-gated to `python_version <
+# "3.11"`, so 3.11+ users pay nothing). A plain install works out of the box on
+# every supported interpreter; there is no separate extra to remember.
+#
+# Every key below shows its default value (the value the tool uses if you omit
+# the key). Keys marked REQUIRED have no usable default and must be set. Keys
+# marked ACCEPTED (v1) are documented forward-compat knobs: they are parsed
+# without error but not yet acted on in this release, so setting them is
+# harmless and has no effect until a later version implements them.
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# [corpus]: what Sonar searches
+# ----------------------------------------------------------------------------
+# Sonar is general: it can sweep any directory of text files, not just an
+# agent's rule set. Point it at your rules/primitives/memory dir, a docs tree,
+# a folder of past design threads: anything you want a finished work-unit
+# audited against.
+[corpus]
+
+# REQUIRED. Absolute or relative path to the root of your corpus. Relative
+# paths are resolved against the directory containing this config file, so a
+# config committed alongside your rules keeps working when run from elsewhere.
+# There is no default; omitting this is a fail-loud error.
+#
+# Examples:
+#   path = "./rules"
+#   path = "/home/you/.claude/memory"
+#   path = "docs/primitives"
+path = "./corpus"
+
+# REQUIRED. Glob patterns (relative to `path`) selecting the files that count
+# as corpus entries. Use "**" to recurse. At least one pattern is required;
+# an empty list is a fail-loud error. Matching is case-sensitive on the parts
+# of the pattern that your filesystem is case-sensitive about.
+#
+# Common choices:
+#   globs = ["**/*.md"]                 # a tree of markdown rules
+#   globs = ["**/*.md", "**/*.mdx"]     # markdown plus mdx
+#   globs = ["*.md", "primitives/*.md"] # top level + one subdir, no deep recursion
+globs = ["**/*.md"]
+
+# Optional. Glob patterns (relative to `path`) to EXCLUDE after `globs` has
+# matched. Applied as a second pass, so you can include broadly and carve out
+# noise. Default is an empty list (exclude nothing).
+#
+# Typical excludes: generated files, archives, the corpus's own README, and
+# anything that is prose-about-the-rules rather than a rule itself.
+exclude = [
+    "**/README.md",
+    "**/_archive/**",
+    "**/node_modules/**",
+    "**/.git/**",
+]
+
+# Optional, ACCEPTED (v1): documented and parsed but not yet enforced this
+# release. Intended maximum size, in kilobytes, of a single corpus file Sonar
+# will read and tokenize. Once implemented, files larger than this will be
+# skipped with a warning rather than silently dropped, since an oversized file
+# is usually a generated dump or a concatenated log, not a rule. Planned
+# default 512 (512 KB), with 0 meaning "no limit". Setting it today is harmless
+# and has no effect.
+max_file_kb = 512
+
+
+# ----------------------------------------------------------------------------
+# [sonar]: the perception / recall stage (wide, cheap, no LLM)
+# ----------------------------------------------------------------------------
+# Sonar tokenizes the work-unit and each corpus file, then scores overlap.
+# This stage is deliberately HIGH RECALL and noisy: its raw output is a
+# firehose that is never shown to a human; it exists only to hand Lazarus a
+# shortlist. Tune these to widen or tighten that shortlist; do not tune them
+# expecting precision (precision is Lazarus's job, below).
+#
+# v1 scoring is local keyword overlap (a TF-lite token intersection) plus two
+# structural boosts. There are no embeddings in v1; the scorer is a single
+# swappable function, so an embedding backend can replace it later without
+# touching this config's shape.
+[sonar]
+
+# Number of top-ranked candidates Sonar returns to Lazarus, after dropping
+# anything below `min_score`. This bounds how many rules the judge is asked
+# about in one batch, which bounds cost and latency. Raising it improves
+# recall (fewer buried rules missed) at higher judge cost. Default 20.
+top_n = 20
+
+# Minimum overlap score a corpus file must reach to be a candidate at all.
+# Scores are normalized to roughly 0.0-1.0. Below this floor, a file is
+# treated as irrelevant and never reaches the judge. Lower = wider net =
+# more recall and more judge cost. Default 0.05 (very permissive; this is
+# the firehose stage, so err wide and let Lazarus cut).
+min_score = 0.05
+
+# Structural boost applied when a work-unit token appears in a corpus file's
+# title or filename (e.g. a rule named "no-secrets-in-logs.md" gets a boost
+# when the diff mentions "secret" or "log"). Filename/title matches are a
+# strong relevance signal, so this is weighted above raw body overlap.
+# Set to 0.0 to disable. Default 2.0.
+title_boost = 2.0
+
+# Structural boost applied when a work-unit token appears in the corpus file's
+# PATH (directory names), e.g. a diff touching "auth/" lifting rules under a
+# "security/" or "auth/" corpus subtree. Weaker signal than the title, so
+# weighted lower. Set to 0.0 to disable. Default 1.5.
+path_boost = 1.5
+
+# Extra stopwords to drop during tokenization, on top of the built-in English
+# stopword list. Add domain filler that is common in your corpus and your work
+# so it does not inflate overlap scores (e.g. your project's name, "rule",
+# "primitive", "TODO"). Lowercased before comparison. Default is an empty list.
+extra_stopwords = []
+
+
+# ----------------------------------------------------------------------------
+# [judge]: the cognition / precision stage (the LLM judge)
+# ----------------------------------------------------------------------------
+# Lazarus takes Sonar's shortlist, drops anything already DECLINED for this
+# work-unit (the anti-nag suppression), then asks the judge model ONE
+# question, batched across the surviving candidates:
+#
+#     "Would applying this buried rule have CHANGED the finished work?"
+#
+# The judge is instructed to default to NO and to reject rules that are merely
+# on-topic-but-inert. That instruction IS the precision filter. Only candidates
+# the judge marks would_change=true, above `min_confidence`, are emitted as
+# retroactive-fix proposals. Lazarus PROPOSES; it never edits your files.
+#
+# The judge is the single biggest quality knob in the whole tool: precision
+# tracks the model you put in `model`. Running the judge requires the optional
+# `anthropic` extra (`pip install "lazarus-sonar[judge]"`) and an API key. Sonar
+# and the ledger work with zero third-party deps and no key.
+[judge]
+
+# The judge model. This is the main quality lever, since a stronger model gives
+# a stricter, better-calibrated "would this have changed the output?" verdict.
+# Use an exact Anthropic model ID. Default "claude-opus-4-8" (the strongest
+# Opus-tier model; precision-sensitive work gets the strong model by default).
+# Swap to a cheaper model only if you have measured that it holds precision on
+# your corpus.
+model = "claude-opus-4-8"
+
+# Minimum confidence (0.0-1.0) the judge must report on a would_change=true
+# verdict for Lazarus to surface it. Raise toward 1.0 to show only high-
+# certainty retroactive fixes (fewer, safer proposals); lower to see more
+# borderline ones. Default 0.6.
+min_confidence = 0.6
+
+# Max tokens for the judge's structured response. The judge returns one
+# compact JSON object per candidate (rule_id, would_change, where, patch,
+# confidence, reason) via structured output, so this scales with `top_n`, not
+# with prose length. Default 4096. Raise if you audit large batches and see
+# truncated verdicts.
+max_tokens = 4096
+
+# Optional. Anthropic API key for the judge call. Normally leave this UNSET and
+# provide the key via the ANTHROPIC_API_KEY environment variable, which is the
+# primary and recommended path (it keeps the secret out of a file that may be
+# committed). This key exists only for users who prefer config-file secrets;
+# when set it takes precedence over the environment variable. Default unset
+# (falls back to $ANTHROPIC_API_KEY).
+# api_key = "sk-ant-..."
+
+# Optional, ACCEPTED (v1): documented and parsed but not yet enforced this
+# release. Intended per-request timeout for the judge call, in seconds. Once
+# implemented, a timeout will fail loud on the CLI (visible error, non-zero
+# exit) while a Stop / PostToolUse hook prints the error but does NOT block the
+# turn, so a judge/network failure never wedges your session. Planned default
+# 120. Setting it today is harmless and has no effect.
+request_timeout_s = 120
+
+# Optional, ACCEPTED (v1): documented and parsed but not yet enforced this
+# release. Intended cap, in characters, on how much of the work-unit text is
+# sent to the judge. The judge normally needs the whole finished work to decide
+# if a rule would have changed it, so the planned default is 0 (no truncation);
+# a positive value will trade judge accuracy on late changes for fewer tokens
+# on very large diffs. Setting it today is harmless and has no effect.
+work_unit_char_limit = 0
+
+
+# ----------------------------------------------------------------------------
+# [ledger]: the append-only SURFACED / ACTIONED / DECLINED log (anti-nag)
+# ----------------------------------------------------------------------------
+# The ledger is what makes Lazarus quiet. It is an append-only JSONL file keyed
+# on (work_unit_sig, rule_id), where work_unit_sig is a sha256 of the
+# normalized work-unit. Before the judge runs, Lazarus drops any candidate
+# whose (sig, rule_id) is already DECLINED, so a rule judged irrelevant for
+# this exact work, or one you dismissed, is never re-surfaced for the same
+# work. It is SIGNATURE-SCOPED, not a permanent per-rule mute: substantially
+# different work is a new signature and gets a fresh look.
+#
+# Surfaced proposals are written as SURFACED. Acting on one, or dismissing one,
+# is a separate human step recorded via `lazarus ledger action` /
+# `lazarus ledger decline`; nothing is auto-applied.
+[ledger]
+
+# Path to the append-only JSONL ledger file. Relative paths resolve against
+# this config file's directory. The parent directory is created if missing.
+# Keep this in version control if you want the DECLINED/ACTIONED history to
+# travel with the corpus; keep it out (gitignored) if it is per-machine.
+# Default ".lazarus/ledger.jsonl".
+path = ".lazarus/ledger.jsonl"
+
+# Whether DECLINED entries suppress re-surfacing for the same work_unit_sig.
+# This is the anti-nag property. Leave true in normal use. Set false only to
+# temporarily audit everything the judge would surface regardless of prior
+# declines (e.g. when debugging judge calibration). Default true.
+suppress_declined = true
