@@ -25,6 +25,17 @@ The SONAR scoring parameters live in exactly one place: ``sonar.ScoringConfig``.
 This module imports that type, stores an instance on ``Config.scoring``, and does
 NOT define its own copy. Keeping a single source of truth for the scoring knobs
 prevents the two-divergent-copies drift that this contract exists to kill.
+
+v2 async additions (additive, absent-table-means-defaults)
+----------------------------------------------------------
+v2 adds one new ``[async]`` table (with a nested ``[async.pregate]`` table) that
+configures the off-critical-path concurrency transport: the non-blocking
+launcher, the detached background runner, the next-turn injection hook, and the
+opt-in synchronous pre-gate. It is built exactly like ``[judge]`` and
+``[ledger]`` via the same small validation helpers, and an ABSENT ``[async]``
+table yields all defaults, so every existing v1 config keeps loading byte-for-
+byte the same. The v1 sync path is never edited; ``mode`` selects which path is
+authoritative at runtime (see :class:`AsyncConfig`).
 """
 
 from __future__ import annotations
@@ -64,10 +75,15 @@ __all__ = [
     "ScoringConfig",
     "JudgeConfig",
     "LedgerConfig",
+    "PregateConfig",
+    "AsyncConfig",
     "Config",
     "DEFAULT_CONFIG_FILENAME",
     "DEFAULT_JUDGE_MODEL",
     "DEFAULT_LEDGER_PATH",
+    "DEFAULT_PENDING_PATH",
+    "DEFAULT_ASYNC_SPOOL_DIR",
+    "ASYNC_ENV_VAR",
     "find_config_path",
     "load_config",
 ]
@@ -87,9 +103,30 @@ DEFAULT_CONFIG_FILENAME = "lazarus.config.toml"
 # the old "lazarus.ledger.jsonl" / "./lazarus-ledger.jsonl" spellings.
 DEFAULT_LEDGER_PATH = ".lazarus/ledger.jsonl"
 
+# v2: canonical defaults for the async transport. Both relative, resolved against
+# the config file's directory exactly like DEFAULT_LEDGER_PATH. The pending queue
+# is the async twin of the ledger (surfaced-but-not-yet-injected findings); the
+# spool dir holds the launcher's extracted work-unit files (wu-<run_id>.txt) and
+# the detached runner's per-run stdout/stderr logs (log-<run_id>.txt).
+DEFAULT_PENDING_PATH = ".lazarus/pending.jsonl"
+DEFAULT_ASYNC_SPOOL_DIR = ".lazarus/async"
+
 # Environment variable that can point at a config file, checked after an explicit
 # path and before the walk-up search. Lets a hook export one location once.
 CONFIG_PATH_ENV_VAR = "LAZARUS_CONFIG"
+
+# v2: exported by the v2 settings snippet (settings.snippet.v2.json) when the
+# async hooks are wired. When neither [async].mode nor [async].enabled is set in
+# the config, _build_async auto-detects the default: "async" if this env var is
+# truthy (the hooks are installed), else "sync" (v1 blocking path stays
+# authoritative). A bare `mode`/`enabled` key in the config overrides the
+# auto-detect.
+ASYNC_ENV_VAR = "LAZARUS_ASYNC"
+
+# Valid values for [async].mode. "async" runs the launcher+runner+inject
+# pipeline; "sync" makes the launcher a no-op so the v1 blocking retro-audit path
+# is authoritative. The two modes are mutually exclusive at runtime.
+_ASYNC_MODES = ("async", "sync")
 
 # Documented example glob shape. Globs are REQUIRED; this constant exists solely
 # to make error messages concrete and is never applied as a silent fallback
@@ -118,8 +155,8 @@ class ConfigError(Exception):
 #
 # NOTE: there is no SonarConfig here. The SONAR scoring knobs are
 # ``sonar.ScoringConfig`` (imported above), and Config stores an instance of it
-# on the ``scoring`` attribute. Config only defines the judge/ledger sub-configs
-# and the top-level Config aggregate.
+# on the ``scoring`` attribute. Config only defines the judge/ledger/async
+# sub-configs and the top-level Config aggregate.
 
 
 @dataclass(frozen=True)
@@ -163,6 +200,65 @@ class LedgerConfig:
 
 
 @dataclass(frozen=True)
+class PregateConfig:
+    """The OPTIONAL, opt-in synchronous shift-left pre-gate (PreToolUse).
+
+    The pre-gate is the one place v2 puts a judge call back ON the critical path,
+    so it is triple-constrained and OFF by default:
+
+    - ``enabled`` gates the whole thing (default False, opt-in).
+    - ``min_confidence`` is deliberately HIGH (default 0.85, well above the
+      judge's normal 0.6) so only near-certain violations surface. This dodges
+      the deep-recall noise problem: merely-plausible matches never fire.
+    - ``max_candidates`` hard-caps how many SONAR candidates are judged
+      synchronously (default 3), bounding the on-path latency the gate
+      deliberately reintroduces.
+
+    See DECISIONS D-7 in the v2 contract.
+    """
+
+    enabled: bool = False
+    min_confidence: float = 0.85
+    max_candidates: int = 3
+
+
+@dataclass(frozen=True)
+class AsyncConfig:
+    """v2 async-transport parameters (off-critical-path concurrency).
+
+    ``mode`` is the master switch:
+
+    - ``"sync"``  : the v2 launcher is a no-op; the v1 blocking retro-audit path
+                    on Stop/PostToolUse is authoritative. Identical v1 behaviour.
+    - ``"async"`` : the launcher dispatches the detached runner, which runs the
+                    identical v1 engine off the critical path and writes surfaced
+                    findings to the pending queue; the injection hook surfaces
+                    them on the next turn. In this mode the v1 ``retro_audit.py``
+                    hook is REPLACED (not run alongside) the launcher.
+
+    ``enabled`` is a convenience boolean equivalent to ``mode == "async"``. It is
+    exposed because a boolean reads cleanly in a settings file; if a config sets
+    BOTH ``mode`` and ``enabled`` and they disagree, load fails loud (see
+    ``_build_async``).
+
+    ``pending_path`` and ``spool_dir`` are resolved against the config file's
+    directory, exactly like ``ledger.path``. ``stub_judge`` forces the offline
+    deterministic stub judge in the background runner (CI / no-key installs); the
+    launcher propagates it to the runner as ``--stub``.
+    """
+
+    mode: str = "sync"
+    pending_path: Path = Path(DEFAULT_PENDING_PATH)
+    spool_dir: Path = Path(DEFAULT_ASYNC_SPOOL_DIR)
+    stub_judge: bool = False
+    pregate: PregateConfig = field(default_factory=PregateConfig)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "async"
+
+
+@dataclass(frozen=True)
 class Config:
     """Fully-resolved, validated configuration.
 
@@ -173,16 +269,21 @@ class Config:
 
     Two access styles coexist deliberately:
 
-    - Structured sub-objects (``scoring``, ``judge``, ``ledger``) mirror the
-      config file's tables and are what ``_build_config`` populates.
+    - Structured sub-objects (``scoring``, ``judge``, ``ledger``, ``async_``)
+      mirror the config file's tables and are what ``_build_config`` populates.
     - Flat read-only properties (``ledger_path``, ``min_confidence``,
-      ``judge_model``, ``max_candidates``, ``api_key``, ``top_n``, ``min_score``)
-      are thin delegates the CLI, LAZARUS, and the hooks read by name. They add
-      no state and keep Config frozen and validated.
+      ``judge_model``, ``max_candidates``, ``api_key``, ``top_n``, ``min_score``,
+      and the v2 ``async_*`` / ``pending_path`` / ``pregate_*`` accessors) are
+      thin delegates the CLI, LAZARUS, and the hooks read by name. They add no
+      state and keep Config frozen and validated.
 
     ``scoring`` is a ``sonar.ScoringConfig`` (the one SONAR-knob type). The name
     ``scoring`` matches ``run_sonar``'s ``scoring=`` parameter, so there is
     exactly one name for the knob object across the codebase.
+
+    The v2 async sub-object is stored as ``async_`` (trailing underscore, since
+    ``async`` is a Python keyword). An ABSENT ``[async]`` table yields the
+    default :class:`AsyncConfig`, so a v1 config loads unchanged.
     """
 
     # --- corpus ---
@@ -194,6 +295,9 @@ class Config:
     scoring: ScoringConfig
     judge: JudgeConfig
     ledger: LedgerConfig
+
+    # --- v2 async transport (additive; defaults to sync/all-defaults) ---
+    async_: AsyncConfig = field(default_factory=AsyncConfig)
 
     source_path: Path | None = field(default=None)
 
@@ -227,6 +331,43 @@ class Config:
     @property
     def min_score(self) -> float:
         return self.scoring.min_score
+
+    # --- v2 flat accessors (async transport) ------------------------------- #
+    # These mirror the v1 delegate style (ledger_path / min_confidence / ...) so
+    # the launcher, runner, and hooks read one flat name and never reach into the
+    # nested sub-objects. No new state; all derived from ``async_``.
+
+    @property
+    def async_enabled(self) -> bool:
+        return self.async_.enabled
+
+    @property
+    def async_mode(self) -> str:
+        return self.async_.mode
+
+    @property
+    def pending_path(self) -> Path:
+        return self.async_.pending_path
+
+    @property
+    def async_spool_dir(self) -> Path:
+        return self.async_.spool_dir
+
+    @property
+    def async_stub_judge(self) -> bool:
+        return self.async_.stub_judge
+
+    @property
+    def pregate_enabled(self) -> bool:
+        return self.async_.pregate.enabled
+
+    @property
+    def pregate_min_confidence(self) -> float:
+        return self.async_.pregate.min_confidence
+
+    @property
+    def pregate_max_candidates(self) -> int:
+        return self.async_.pregate.max_candidates
 
     def with_overrides(self, **overrides: Any) -> "Config":
         """Return a copy with CLI/programmatic overrides applied.
@@ -396,6 +537,13 @@ def _build_config(raw: Mapping[str, Any], config_path: Path) -> Config:
         _optional_table(raw, "ledger", config_path), base_dir, config_path
     )
 
+    # --- [async] (v2, additive) -------------------------------------------- #
+    # Absent table -> AsyncConfig defaults (mode auto-detected from the
+    # LAZARUS_ASYNC env var). Existing v1 configs load unchanged.
+    async_ = _build_async(
+        _optional_table(raw, "async", config_path), base_dir, config_path
+    )
+
     return Config(
         corpus_path=corpus_path,
         corpus_globs=corpus_globs,
@@ -403,6 +551,7 @@ def _build_config(raw: Mapping[str, Any], config_path: Path) -> Config:
         scoring=scoring,
         judge=judge,
         ledger=ledger,
+        async_=async_,
         source_path=config_path,
     )
 
@@ -497,12 +646,138 @@ def _build_ledger(
     )
 
 
+def _build_async(
+    table: Mapping[str, Any], base_dir: Path, config_path: Path
+) -> AsyncConfig:
+    """Build the v2 :class:`AsyncConfig` from the optional ``[async]`` table.
+
+    Mirrors ``_build_ledger`` / ``_build_judge``: same helpers (``_bool``,
+    ``_number``, ``_positive_int``, ``_resolve_path``), same fail-loud discipline.
+    An absent/empty table produces all defaults, with ``mode`` auto-detected from
+    the ``LAZARUS_ASYNC`` env var so a v1 config keeps loading unchanged while a
+    v2-wired install defaults to "async".
+
+    Resolution of ``mode`` (in priority order):
+      1. Explicit ``mode`` key, validated against {"async", "sync"}.
+      2. Explicit ``enabled`` key (bool) mapped to "async"/"sync".
+      3. If BOTH ``mode`` and ``enabled`` are present, they must AGREE or load
+         fails loud (no silent precedence).
+      4. If NEITHER is present, auto-detect: "async" when $LAZARUS_ASYNC is
+         truthy (the v2 hooks are wired), else "sync".
+    """
+    mode_raw = table.get("mode")
+    enabled_raw = table.get("enabled")
+
+    mode_from_mode: str | None = None
+    if mode_raw is not None:
+        if not isinstance(mode_raw, str):
+            raise ConfigError(
+                f"'async.mode' must be a string in {config_path}, got "
+                f"{type(mode_raw).__name__} ({mode_raw!r})."
+            )
+        mode_val = mode_raw.strip().lower()
+        if mode_val not in _ASYNC_MODES:
+            raise ConfigError(
+                f"'async.mode' must be one of {list(_ASYNC_MODES)} in "
+                f"{config_path}, got {mode_raw!r}."
+            )
+        mode_from_mode = mode_val
+
+    mode_from_enabled: str | None = None
+    if enabled_raw is not None:
+        enabled_val = _bool(enabled_raw, "async.enabled", config_path)
+        mode_from_enabled = "async" if enabled_val else "sync"
+
+    if mode_from_mode is not None and mode_from_enabled is not None:
+        # Both set: they must not contradict each other. A config that says
+        # mode="sync" but enabled=true is ambiguous; refuse it loudly rather
+        # than silently letting one win.
+        if mode_from_mode != mode_from_enabled:
+            raise ConfigError(
+                f"'async.mode' and 'async.enabled' disagree in {config_path}: "
+                f"mode={mode_from_mode!r} implies "
+                f"enabled={mode_from_mode == 'async'}, but enabled="
+                f"{mode_from_enabled == 'async'} was set. Set one, or make them "
+                f"agree."
+            )
+        mode = mode_from_mode
+    elif mode_from_mode is not None:
+        mode = mode_from_mode
+    elif mode_from_enabled is not None:
+        mode = mode_from_enabled
+    else:
+        # Neither set: auto-detect from the environment. The v2 settings snippet
+        # exports LAZARUS_ASYNC=1 when the async hooks are wired.
+        mode = "async" if _env_truthy(ASYNC_ENV_VAR) else "sync"
+
+    pending_raw = table.get("pending_path", DEFAULT_PENDING_PATH)
+    if not isinstance(pending_raw, str) or not pending_raw.strip():
+        raise ConfigError(
+            f"'async.pending_path' must be a non-empty string in {config_path}, "
+            f"got {pending_raw!r}."
+        )
+
+    spool_raw = table.get("spool_dir", DEFAULT_ASYNC_SPOOL_DIR)
+    if not isinstance(spool_raw, str) or not spool_raw.strip():
+        raise ConfigError(
+            f"'async.spool_dir' must be a non-empty string in {config_path}, got "
+            f"{spool_raw!r}."
+        )
+
+    stub_judge = _bool(
+        table.get("stub_judge", False), "async.stub_judge", config_path
+    )
+
+    pregate = _build_pregate(
+        _optional_table(table, "pregate", config_path), config_path
+    )
+
+    return AsyncConfig(
+        mode=mode,
+        pending_path=_resolve_path(pending_raw, base_dir),
+        spool_dir=_resolve_path(spool_raw, base_dir),
+        stub_judge=stub_judge,
+        pregate=pregate,
+    )
+
+
+def _build_pregate(table: Mapping[str, Any], config_path: Path) -> PregateConfig:
+    """Build the nested ``[async.pregate]`` table (opt-in shift-left gate).
+
+    Default OFF. ``min_confidence`` is deliberately high (0.85) and
+    ``max_candidates`` deliberately tiny (3): the two narrowness knobs that keep
+    the on-path gate a scalpel rather than a noise source (D-7).
+    """
+    enabled = _bool(
+        table.get("enabled", PregateConfig.enabled),
+        "async.pregate.enabled", config_path,
+    )
+    min_confidence = _number(
+        table.get("min_confidence", PregateConfig.min_confidence),
+        "async.pregate.min_confidence", config_path, minimum=0.0, maximum=1.0,
+    )
+    max_candidates = _positive_int(
+        table.get("max_candidates", PregateConfig.max_candidates),
+        "async.pregate.max_candidates", config_path,
+    )
+    return PregateConfig(
+        enabled=enabled,
+        min_confidence=min_confidence,
+        max_candidates=max_candidates,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Internal: overrides
 # --------------------------------------------------------------------------- #
 
 # Maps override keys (CLI flag names, underscored) to how they apply. Kept
 # explicit so a typo'd flag is rejected rather than silently ignored.
+#
+# v2 adds three async override keys for CLI parity: async_mode, pending_path, and
+# pregate_min_confidence. These let the runner / launcher / pregate entrypoints
+# override the corresponding config values from the command line without a second
+# schema.
 _OVERRIDE_KEYS = frozenset(
     {
         "corpus_path",
@@ -513,6 +788,9 @@ _OVERRIDE_KEYS = frozenset(
         "top_n",
         "max_candidates",
         "ledger_path",
+        "async_mode",
+        "pending_path",
+        "pregate_min_confidence",
     }
 )
 
@@ -584,12 +862,62 @@ def _apply_overrides(config: Config, overrides: Mapping[str, Any]) -> Config:
         p = Path(ledger_path).expanduser().resolve()
         updated = replace(updated, ledger=replace(updated.ledger, path=p))
 
+    # --- v2 async overrides ------------------------------------------------ #
+    # Applied against the async_ sub-object the same way ledger_path is applied
+    # against ledger. None values (un-set argparse defaults) are skipped so the
+    # runner/launcher can pass argparse namespaces straight through.
+    async_mode = overrides.get("async_mode")
+    pending_path = overrides.get("pending_path")
+    pregate_min_confidence = overrides.get("pregate_min_confidence")
+    if (
+        async_mode is not None
+        or pending_path is not None
+        or pregate_min_confidence is not None
+    ):
+        async_ = updated.async_
+        if async_mode is not None:
+            if not isinstance(async_mode, str):
+                raise ConfigError("--async-mode override must be a string.")
+            mode_val = async_mode.strip().lower()
+            if mode_val not in _ASYNC_MODES:
+                raise ConfigError(
+                    f"--async-mode override must be one of {list(_ASYNC_MODES)}, "
+                    f"got {async_mode!r}."
+                )
+            async_ = replace(async_, mode=mode_val)
+        if pending_path is not None:
+            p = Path(pending_path).expanduser().resolve()
+            async_ = replace(async_, pending_path=p)
+        if pregate_min_confidence is not None:
+            pregate = replace(
+                async_.pregate,
+                min_confidence=_number(
+                    pregate_min_confidence,
+                    "--pregate-min-confidence", None, minimum=0.0, maximum=1.0,
+                ),
+            )
+            async_ = replace(async_, pregate=pregate)
+        updated = replace(updated, async_=async_)
+
     return updated
 
 
 # --------------------------------------------------------------------------- #
 # Internal: small validation helpers
 # --------------------------------------------------------------------------- #
+
+
+def _env_truthy(name: str) -> bool:
+    """Return True if the environment variable ``name`` is set to a truthy value.
+
+    Truthy = a non-empty value that is not one of the common false spellings
+    ("0", "false", "no", "off", case-insensitive). Used only for the
+    LAZARUS_ASYNC mode auto-detect; an explicit config key always overrides it.
+    """
+    val = os.environ.get(name)
+    if val is None:
+        return False
+    return val.strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
