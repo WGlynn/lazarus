@@ -211,6 +211,8 @@ def run_background_audit(
     # unit is judged exactly as before, so the v1 / current path is unchanged.
     _trigger_threshold = None
     _trigger_path = None
+    _shadow_this_run = False
+    _shadow_path = None
     _trig = getattr(getattr(config, "async_", None), "trigger", None)
     if _trig is not None and _trig.enabled:
         from pathlib import Path
@@ -227,8 +229,11 @@ def run_background_audit(
             base_threshold=_trigger_threshold,
             risk=RiskProfile(high_risk_multiplier=_trig.high_risk_multiplier),
             max_judge_candidates=_trig.max_judge_candidates,
+            shadow_epsilon=_trig.shadow_epsilon,
         )
         _decision = _policy.decide(candidates, work_unit)
+        _shadow_this_run = _decision.shadow
+        _shadow_path = Path(config.async_spool_dir) / "trigger_shadow.json"
         candidates = (
             _policy.select_for_judge(candidates) if _decision.should_judge else []
         )
@@ -259,14 +264,33 @@ def run_background_audit(
         for fix in result.fixes
     )
 
-    # Adaptive retune: fit the trigger bar to the ledger's recent accept-rate so it
-    # self-corrects (too much DECLINED -> raise the bar; near-all SURFACED -> lower).
-    # No-op unless the gate is enabled with adaptive=true.
+    # Shadow sampling: record whether this force-judged below-bar unit surfaced a real
+    # catch, giving the controller the recall signal it is otherwise blind to.
+    _shadow_surfaced = 0
+    _shadow_total = 0
+    if _shadow_path is not None:
+        from .trigger import load_shadow_stats, record_shadow
+
+        if _shadow_this_run:
+            _shadow_surfaced, _shadow_total = record_shadow(
+                _shadow_path, surfaced=bool(result.fixes)
+            )
+        else:
+            _shadow_surfaced, _shadow_total = load_shadow_stats(_shadow_path)
+
+    # Adaptive retune: fit the trigger bar to the ledger's recent accept-rate AND the
+    # shadow-sample recall, so it self-corrects on both precision (too much DECLINED ->
+    # raise) and false negatives (real catches below the bar -> lower). No-op unless
+    # the gate is enabled with adaptive=true.
     if _trigger_path is not None and _trigger_threshold is not None:
         from .trigger import ThresholdController, save_threshold
 
         _new_thr, _reason = ThresholdController().update_from_records(
-            _trigger_threshold, ledger.read_all(), window=200
+            _trigger_threshold,
+            ledger.read_all(),
+            window=200,
+            shadow_surfaced=_shadow_surfaced,
+            shadow_total=_shadow_total,
         )
         if _new_thr != _trigger_threshold:
             save_threshold(_trigger_path, _new_thr, reason=_reason)

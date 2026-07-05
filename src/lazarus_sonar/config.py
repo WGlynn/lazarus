@@ -245,6 +245,7 @@ class TriggerConfig:
     high_risk_multiplier: float = 0.4
     max_judge_candidates: int = 3
     adaptive: bool = True
+    shadow_epsilon: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -819,12 +820,17 @@ def _build_trigger(table: Mapping[str, Any], config_path: Path) -> TriggerConfig
         table.get("adaptive", TriggerConfig.adaptive),
         "async.trigger.adaptive", config_path,
     )
+    shadow_epsilon = _number(
+        table.get("shadow_epsilon", TriggerConfig.shadow_epsilon),
+        "async.trigger.shadow_epsilon", config_path, minimum=0.0, maximum=1.0,
+    )
     return TriggerConfig(
         enabled=enabled,
         base_threshold=base_threshold,
         high_risk_multiplier=high_risk_multiplier,
         max_judge_candidates=max_judge_candidates,
         adaptive=adaptive,
+        shadow_epsilon=shadow_epsilon,
     )
 
 

@@ -38,6 +38,7 @@ Stdlib only, no third-party deps, deterministic -- same discipline as sonar.py.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,8 @@ __all__ = [
     "accept_stats",
     "load_threshold",
     "save_threshold",
+    "load_shadow_stats",
+    "record_shadow",
     "DEFAULT_HIGH_RISK_MARKERS",
     "SURFACED_VERDICTS",
     "DECLINED_VERDICT",
@@ -141,6 +144,7 @@ class TriggerDecision:
     risk_multiplier: float
     n_considered: int
     reason: str
+    shadow: bool = False
 
 
 @dataclass
@@ -156,6 +160,7 @@ class TriggerPolicy:
     base_threshold: float
     risk: RiskProfile = field(default_factory=RiskProfile)
     max_judge_candidates: int = 3
+    shadow_epsilon: float = 0.0
 
     def decide(self, candidates: Sequence[Any], work_unit: str) -> TriggerDecision:
         risk_mult = self.risk.classify(work_unit)
@@ -172,12 +177,19 @@ class TriggerPolicy:
             )
 
         top_score = float(_score_of(candidates[0]))
-        should = top_score >= effective
+        over_bar = top_score >= effective
+        should = over_bar
+        shadow = False
+        if not over_bar and self._should_shadow(work_unit):
+            # Force-judge a below-bar unit occasionally so the controller can measure
+            # the recall it is otherwise blind to (its own false negatives).
+            should = True
+            shadow = True
         band = "high-risk" if risk_mult < self.risk.normal_multiplier else "normal"
         reason = (
             f"top SONAR score {top_score:.4f} "
-            f"{'>=' if should else '<'} bar {effective:.4f} "
-            f"({band}, x{risk_mult:g})"
+            f"{'>=' if over_bar else '<'} bar {effective:.4f} "
+            f"({band}, x{risk_mult:g})" + (" [shadow sample]" if shadow else "")
         )
         return TriggerDecision(
             should_judge=should,
@@ -186,7 +198,22 @@ class TriggerPolicy:
             risk_multiplier=risk_mult,
             n_considered=min(len(candidates), self.max_judge_candidates),
             reason=reason,
+            shadow=shadow,
         )
+
+    def _should_shadow(self, work_unit: str) -> bool:
+        """Deterministic ~epsilon sampler over the work-unit text.
+
+        Reproducible with no PYTHONHASHSEED dependence: a given unit is always or
+        never a shadow sample, so behaviour is testable and stable across runs.
+        """
+        if self.shadow_epsilon <= 0.0:
+            return False
+        if self.shadow_epsilon >= 1.0:
+            return True
+        denom = max(1, round(1.0 / self.shadow_epsilon))
+        digest = hashlib.sha256(work_unit.encode("utf-8")).hexdigest()
+        return int(digest[:8], 16) % denom == 0
 
     def select_for_judge(self, candidates: Sequence[Any]) -> list:
         """The (already score-sorted) candidates to actually hand the judge, capped."""
@@ -245,6 +272,11 @@ class ControllerConfig:
     min_threshold: float = 0.0
     max_threshold: float = 1e9
     min_samples: int = 10
+    # Shadow-sampling recall guard: if at least `shadow_min_samples` below-bar units
+    # were force-judged and at least this fraction surfaced a real catch, the bar is
+    # too high and is lowered regardless of accept-rate.
+    shadow_recall_floor: float = 0.15
+    shadow_min_samples: int = 5
 
 
 @dataclass
@@ -252,9 +284,27 @@ class ThresholdController:
     config: ControllerConfig = field(default_factory=ControllerConfig)
 
     def next_threshold(
-        self, current: float, surfaced: int, declined: int
+        self,
+        current: float,
+        surfaced: int,
+        declined: int,
+        shadow_surfaced: int = 0,
+        shadow_total: int = 0,
     ) -> Tuple[float, str]:
         cfg = self.config
+
+        # Recall guard first: shadow sampling is the ONLY signal the gate has about its
+        # own false negatives. If force-judged below-bar units are surfacing real
+        # catches, the bar is too high no matter how clean the accept-rate looks.
+        if shadow_total >= cfg.shadow_min_samples:
+            shadow_recall = shadow_surfaced / shadow_total
+            if shadow_recall >= cfg.shadow_recall_floor:
+                new = max(current * cfg.step_down, cfg.min_threshold)
+                return new, (
+                    f"shadow recall {shadow_recall:.2f} >= {cfg.shadow_recall_floor}; "
+                    f"lower bar {current:.4f} -> {new:.4f} (real catches below the bar)"
+                )
+
         n = surfaced + declined
         if n < cfg.min_samples:
             return current, f"insufficient samples ({n} < {cfg.min_samples}); hold"
@@ -275,10 +325,17 @@ class ThresholdController:
         return current, f"accept {accept:.2f} in [{cfg.target_low}, {cfg.target_high}]; hold"
 
     def update_from_records(
-        self, current: float, records: Iterable[Any], window: Optional[int] = None
+        self,
+        current: float,
+        records: Iterable[Any],
+        window: Optional[int] = None,
+        shadow_surfaced: int = 0,
+        shadow_total: int = 0,
     ) -> Tuple[float, str]:
         surfaced, declined = accept_stats(records, window=window)
-        return self.next_threshold(current, surfaced, declined)
+        return self.next_threshold(
+            current, surfaced, declined, shadow_surfaced, shadow_total
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -320,3 +377,32 @@ def save_threshold(
         ),
         encoding="utf-8",
     )
+
+
+def load_shadow_stats(path: "Path | str") -> Tuple[int, int]:
+    """(shadow_surfaced, shadow_total) for below-bar units that were force-judged."""
+    p = Path(path)
+    if not p.exists():
+        return 0, 0
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return int(data.get("shadow_surfaced", 0)), int(data.get("shadow_total", 0))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return 0, 0
+
+
+def record_shadow(path: "Path | str", surfaced: bool) -> Tuple[int, int]:
+    """Increment the shadow-sample counters, returning the new (surfaced, total)."""
+    shadow_surfaced, shadow_total = load_shadow_stats(path)
+    shadow_surfaced += 1 if surfaced else 0
+    shadow_total += 1
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(
+            {"shadow_surfaced": shadow_surfaced, "shadow_total": shadow_total},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return shadow_surfaced, shadow_total

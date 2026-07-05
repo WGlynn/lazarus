@@ -8,7 +8,9 @@ from lazarus_sonar.async_.trigger import (
     ThresholdController,
     TriggerPolicy,
     accept_stats,
+    load_shadow_stats,
     load_threshold,
+    record_shadow,
     save_threshold,
 )
 
@@ -145,3 +147,58 @@ def test_threshold_load_corrupt_returns_default(tmp_path):
     p = tmp_path / "bad.json"
     p.write_text("not json{{", encoding="utf-8")
     assert load_threshold(p, default=0.9) == 0.9
+
+
+# --------------------------------------------------------------------------- #
+# shadow sampling (the recall signal the accept-rate controller is blind to)
+# --------------------------------------------------------------------------- #
+
+
+def test_shadow_off_by_default_below_bar_skips():
+    d = TriggerPolicy(base_threshold=2.0).decide([Cand(1.0)], "routine change")
+    assert d.should_judge is False
+    assert d.shadow is False
+
+
+def test_shadow_epsilon_one_forces_below_bar_judge():
+    d = TriggerPolicy(base_threshold=2.0, shadow_epsilon=1.0).decide([Cand(1.0)], "routine")
+    assert d.should_judge is True
+    assert d.shadow is True
+
+
+def test_shadow_is_deterministic_per_workunit():
+    pol = TriggerPolicy(base_threshold=2.0, shadow_epsilon=0.5)
+    a = pol.decide([Cand(0.1)], "same unit text")
+    b = pol.decide([Cand(0.1)], "same unit text")
+    assert a.shadow == b.shadow  # reproducible, no PYTHONHASHSEED dependence
+
+
+def test_shadow_does_not_fire_above_bar():
+    d = TriggerPolicy(base_threshold=1.0, shadow_epsilon=1.0).decide([Cand(5.0)], "x")
+    assert d.should_judge is True
+    assert d.shadow is False  # above the bar is a normal judge, never a shadow sample
+
+
+def test_controller_lowers_on_shadow_recall():
+    ctl = ThresholdController(
+        ControllerConfig(min_samples=10, shadow_min_samples=5, shadow_recall_floor=0.15, step_down=0.9)
+    )
+    # accept-rate alone would hold (0.70 in band); shadow recall says the bar is too high.
+    new, why = ctl.next_threshold(2.0, surfaced=14, declined=6, shadow_surfaced=2, shadow_total=5)
+    assert new == pytest.approx(1.8)
+    assert "shadow recall" in why
+
+
+def test_controller_ignores_thin_shadow_data():
+    ctl = ThresholdController(ControllerConfig(min_samples=10, shadow_min_samples=5))
+    new, why = ctl.next_threshold(2.0, surfaced=14, declined=6, shadow_surfaced=3, shadow_total=3)
+    assert new == 2.0
+    assert "hold" in why
+
+
+def test_shadow_stats_persistence(tmp_path):
+    p = tmp_path / "sub" / "shadow.json"
+    assert load_shadow_stats(p) == (0, 0)
+    assert record_shadow(p, surfaced=True) == (1, 1)
+    assert record_shadow(p, surfaced=False) == (1, 2)
+    assert load_shadow_stats(p) == (1, 2)
