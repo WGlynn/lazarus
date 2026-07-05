@@ -1,5 +1,9 @@
 # Lazarus + Sonar
 
+Every memory, primitive, skill, rule, and hook you give an agent is a piece of hard-won wisdom. The trouble is what happens at scale. Once there are thousands of them, no agent can hold them all in mind before it acts, so the older ones get buried. They are still true and still relevant, they just never get retrieved. That is the data-availability problem, and it is one of the quietest killers of behavioral and performance consistency: the thousands of artifacts you invested in are forced to compete for a fixed slice of attention every turn, and most of what they should have contributed is lost. Acting becomes a shot in the dark, blind to the one rule that should have fired.
+
+Lazarus takes the other side of the bet. Instead of trying to consult everything before the agent acts, it lets the work finish, then re-reads it and asks the buried rules a single question: would this one have changed the result? Only the rules that would actually change something ever surface.
+
 A retroactive-knowledge-audit tool for Claude Code and any agent that keeps its
 rules, primitives, and memory in files. It re-reads the work an agent just
 finished, finds the buried-but-still-valid rules that apply to it, and asks one
