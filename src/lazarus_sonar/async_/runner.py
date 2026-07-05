@@ -75,7 +75,7 @@ import sys
 import traceback
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 # --------------------------------------------------------------------------- #
 # v1 engine imports -- REUSED, never reimplemented.
@@ -202,6 +202,37 @@ def run_background_audit(
     # advisory in v1 and has no effect on scoring; it is threaded for the judge.
     candidates = run_sonar_for_config(work_unit, config, kind=kind)
 
+    # --- NEW in v2: trigger gate (additive; only active when [async.trigger].enabled)
+    # SONAR already ran (cheap, total coverage). This decides whether the EXPENSIVE
+    # judge runs for THIS unit, so cost tracks risk density rather than a clock or a
+    # token count. Below the risk-weighted bar we hand run_lazarus an EMPTY shortlist,
+    # which short-circuits before any judge call (see lazarus.run_lazarus, the
+    # "if not survivors" early return). Default OFF -> this block is skipped and every
+    # unit is judged exactly as before, so the v1 / current path is unchanged.
+    _trigger_threshold = None
+    _trigger_path = None
+    _trig = getattr(getattr(config, "async_", None), "trigger", None)
+    if _trig is not None and _trig.enabled:
+        from pathlib import Path
+
+        from .trigger import RiskProfile, TriggerPolicy, load_threshold
+
+        _trigger_threshold = _trig.base_threshold
+        if _trig.adaptive:
+            _trigger_path = Path(config.async_spool_dir) / "trigger_threshold.json"
+            _trigger_threshold = load_threshold(
+                _trigger_path, default=_trig.base_threshold
+            )
+        _policy = TriggerPolicy(
+            base_threshold=_trigger_threshold,
+            risk=RiskProfile(high_risk_multiplier=_trig.high_risk_multiplier),
+            max_judge_candidates=_trig.max_judge_candidates,
+        )
+        _decision = _policy.decide(candidates, work_unit)
+        candidates = (
+            _policy.select_for_judge(candidates) if _decision.should_judge else []
+        )
+
     # LAZARUS (cognition / precision): anti-nag suppression -> one batched judge
     # call -> confidence filter -> rank -> record. The shared ledger and the
     # injected judge_fn are the ONLY things that differ between a real and an
@@ -227,6 +258,18 @@ def run_background_audit(
         PendingFinding.from_retrofix(fix, work_unit_sig=sig, kind=kind, run_id=rid)
         for fix in result.fixes
     )
+
+    # Adaptive retune: fit the trigger bar to the ledger's recent accept-rate so it
+    # self-corrects (too much DECLINED -> raise the bar; near-all SURFACED -> lower).
+    # No-op unless the gate is enabled with adaptive=true.
+    if _trigger_path is not None and _trigger_threshold is not None:
+        from .trigger import ThresholdController, save_threshold
+
+        _new_thr, _reason = ThresholdController().update_from_records(
+            _trigger_threshold, ledger.read_all(), window=200
+        )
+        if _new_thr != _trigger_threshold:
+            save_threshold(_trigger_path, _new_thr, reason=_reason)
 
     return result
 

@@ -223,6 +223,31 @@ class PregateConfig:
 
 
 @dataclass(frozen=True)
+class TriggerConfig:
+    """The OPTIONAL, opt-in v2 trigger gate on the background audit.
+
+    SONAR runs on every work-unit (cheap, offline); this gate decides whether the
+    EXPENSIVE judge runs for a given unit, so cost tracks risk density rather than a
+    clock or token count. OFF by default -> every unit is judged, exactly as before.
+
+    - ``enabled`` gates the whole thing (default False, opt-in).
+    - ``base_threshold`` is the SONAR-score bar at normal risk; the judge fires only
+      when the top candidate's score clears it.
+    - ``high_risk_multiplier`` (< 1) LOWERS the bar for high-risk work-units (secrets,
+      destructive ops, money, auth), so the audit is eager where a miss is expensive.
+    - ``max_judge_candidates`` caps how many candidates reach the judge (cost bound).
+    - ``adaptive`` retunes ``base_threshold`` from the ledger's SURFACED/DECLINED
+      accept-rate and persists it beside the ledger, so the bar is fitted, not guessed.
+    """
+
+    enabled: bool = False
+    base_threshold: float = 1.0
+    high_risk_multiplier: float = 0.4
+    max_judge_candidates: int = 3
+    adaptive: bool = True
+
+
+@dataclass(frozen=True)
 class AsyncConfig:
     """v2 async-transport parameters (off-critical-path concurrency).
 
@@ -252,6 +277,7 @@ class AsyncConfig:
     spool_dir: Path = Path(DEFAULT_ASYNC_SPOOL_DIR)
     stub_judge: bool = False
     pregate: PregateConfig = field(default_factory=PregateConfig)
+    trigger: TriggerConfig = field(default_factory=TriggerConfig)
 
     @property
     def enabled(self) -> bool:
@@ -731,6 +757,9 @@ def _build_async(
     pregate = _build_pregate(
         _optional_table(table, "pregate", config_path), config_path
     )
+    trigger = _build_trigger(
+        _optional_table(table, "trigger", config_path), config_path
+    )
 
     return AsyncConfig(
         mode=mode,
@@ -738,6 +767,7 @@ def _build_async(
         spool_dir=_resolve_path(spool_raw, base_dir),
         stub_judge=stub_judge,
         pregate=pregate,
+        trigger=trigger,
     )
 
 
@@ -764,6 +794,37 @@ def _build_pregate(table: Mapping[str, Any], config_path: Path) -> PregateConfig
         enabled=enabled,
         min_confidence=min_confidence,
         max_candidates=max_candidates,
+    )
+
+
+def _build_trigger(table: Mapping[str, Any], config_path: Path) -> TriggerConfig:
+    """Build the nested ``[async.trigger]`` table (opt-in judge gate). Default OFF."""
+    enabled = _bool(
+        table.get("enabled", TriggerConfig.enabled),
+        "async.trigger.enabled", config_path,
+    )
+    base_threshold = _number(
+        table.get("base_threshold", TriggerConfig.base_threshold),
+        "async.trigger.base_threshold", config_path, minimum=0.0,
+    )
+    high_risk_multiplier = _number(
+        table.get("high_risk_multiplier", TriggerConfig.high_risk_multiplier),
+        "async.trigger.high_risk_multiplier", config_path, minimum=0.0, maximum=1.0,
+    )
+    max_judge_candidates = _positive_int(
+        table.get("max_judge_candidates", TriggerConfig.max_judge_candidates),
+        "async.trigger.max_judge_candidates", config_path,
+    )
+    adaptive = _bool(
+        table.get("adaptive", TriggerConfig.adaptive),
+        "async.trigger.adaptive", config_path,
+    )
+    return TriggerConfig(
+        enabled=enabled,
+        base_threshold=base_threshold,
+        high_risk_multiplier=high_risk_multiplier,
+        max_judge_candidates=max_judge_candidates,
+        adaptive=adaptive,
     )
 
 
