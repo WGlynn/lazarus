@@ -472,6 +472,6 @@ if __name__ == "__main__":
         _err("interrupted")
         sys.exit(130)
     except Exception as exc:  # noqa: BLE001 -- last-resort guard
-        _err("unexpected error in lazarus_pregate hook")
+        _err("unexpected error in the pre-gate hook")
         _err("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip())
         sys.exit(2)

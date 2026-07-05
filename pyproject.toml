@@ -1,1 +1,111 @@
-MODIFIED ([project.scripts]). Added the `lazarus-audit-bg = "lazarus_sonar.async_runner:main"` console script alongside the existing `lazarus` entry. The canonical concurrency contract (§2) and the runner/launcher docstrings promise this console script (the launcher spawns it as the installed-path fallback when the checkout entry shim is absent), but it was missing from pyproject. The demo itself does not depend on it (it spawns the checkout entry shim), but this closes a real drift for installed users.
+# pyproject.toml
+#
+# Lazarus / Sonar - a retroactive knowledge-audit tool for file-based agent memory.
+#
+# Packaging notes (read before editing):
+#   * SONAR (perception/search), the config loader, and the append-only ledger are
+#     stdlib-only in spirit: they need no network access and no LLM SDK. The one
+#     unavoidable exception is a TOML parser. `tomllib` is in the stdlib on Python
+#     3.11+, but there is no stdlib TOML parser on 3.9-3.10, and config.py is a BASE
+#     module imported by the CLI, the hooks, and everything else. So on 3.9-3.10 the
+#     `tomli` backport is a BASE dependency, marker-gated to `python_version < "3.11"`.
+#     On 3.11+ the marker excludes it and config.py uses stdlib `tomllib`, so 3.11+
+#     users pay nothing. This is why a plain `pip install lazarus-sonar` yields a
+#     working config loader on every supported interpreter.
+#   * The Claude judge (LAZARUS's precision filter) is the ONLY part that needs the
+#     `anthropic` SDK. It is an optional extra, [judge], so a user who only wants to
+#     run `lazarus sonar` / the ledger, or who has no API key, never has to install it.
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lazarus-sonar"
+version = "0.1.0"
+description = "Retroactive knowledge-audit for file-based agent memory: SONAR surfaces buried rules, LAZARUS judges whether applying one would have changed the finished work, and proposes fixes."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Lazarus/Sonar contributors" }]
+keywords = [
+    "agent-memory",
+    "retrieval",
+    "audit",
+    "claude",
+    "llm",
+    "code-review",
+    "rules-engine",
+    "data-availability",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Utilities",
+]
+
+# SONAR + config + ledger need no LLM SDK and no network. The only base dependency
+# is the `tomli` TOML backport, and only on Python 3.9-3.10 where there is no stdlib
+# `tomllib`. config.py imports a TOML parser at import time, so this backport must be
+# a BASE dependency (not an extra) for `pip install lazarus-sonar` to yield a working
+# config loader on 3.9-3.10. The environment marker makes it a no-op on 3.11+, where
+# `tomllib` is in the stdlib. Anything that needs a heavier third-party package (the
+# Claude judge) belongs in [project.optional-dependencies].
+dependencies = [
+    'tomli>=1.1.0; python_version < "3.11"',
+]
+
+[project.optional-dependencies]
+# The Claude judge. Only needed for `lazarus audit` (the LAZARUS precision filter)
+# and the hooks that call it. Requires an ANTHROPIC_API_KEY at runtime.
+# Floor is set to a release that supports structured output via messages.parse() /
+# output_config.format and adaptive thinking, which judge.py relies on.
+judge = ["anthropic>=0.69"]
+
+# Convenience: everything a full install needs. The TOML backport is already carried
+# by the base [project.dependencies] above (marker-gated to 3.9-3.10), so it is not
+# repeated here; this extra only layers on the optional judge SDK.
+all = [
+    "anthropic>=0.69",
+]
+
+# Test / lint tooling for contributors. Not required to use the tool. The TOML
+# backport is inherited from the base dependencies, so only the test runner and the
+# judge SDK are listed here.
+dev = [
+    "pytest>=7.0",
+    "anthropic>=0.69",
+]
+
+[project.urls]
+Homepage = "https://github.com/lazarus-sonar/lazarus-sonar"
+Repository = "https://github.com/lazarus-sonar/lazarus-sonar"
+Issues = "https://github.com/lazarus-sonar/lazarus-sonar/issues"
+
+[project.scripts]
+# The `lazarus` CLI. Shared entry point for humans (`lazarus sonar|audit|ledger`)
+# and for the SessionStart / Stop / PostToolUse hooks.
+lazarus = "lazarus_sonar.cli:main"
+# The v2 detached background runner (`lazarus-audit-bg`). Spawned by the async
+# launcher hook as the installed-path fallback when the checkout entry shim
+# (hooks/async_runner_entry.py) is absent. Not normally invoked by hand.
+lazarus-audit-bg = "lazarus_sonar.async_.runner:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lazarus_sonar*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

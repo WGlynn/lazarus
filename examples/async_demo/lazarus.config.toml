@@ -1,1 +1,56 @@
-The v1 demo config PLUS an [async] table. [corpus] path='../demo/corpus' and [ledger] path='../demo/.lazarus/ledger.jsonl' point at the SHARED v1 demo paths so the oracle is byte-identical (2 surfaced, 1 declined). [async] mode='async', pending_path='.lazarus/pending.jsonl', spool_dir='.lazarus/async', stub_judge=true (forces the offline deterministic judge -> no API key). [async.pregate] enabled=false. VERIFIED: load_config resolves corpus/ledger to the shared demo dir and pending/spool demo-local; async_enabled True, mode 'async'.
+# ============================================================================
+# Lazarus + Sonar - v2 ASYNC demo configuration
+# ============================================================================
+#
+# This is the v1 demo config PLUS an [async] table. It reuses the SAME three-rule
+# corpus and the SAME ledger the v1 demo ships, so the async transport is
+# exercised against a byte-identical oracle (2 surfaced, 1 declined). The point
+# is that v2 adds a transport, not a second engine.
+#
+# Relative paths resolve against THIS file's directory (examples/async_demo/):
+#   - corpus + ledger point one dir over into examples/demo/ (SHARED with v1)
+#   - pending queue + spool dir are demo-local (this dir's .lazarus/)
+# ============================================================================
+
+[corpus]
+# Reuse the v1 demo's three-rule corpus verbatim.
+path = "../demo/corpus"
+globs = ["**/*.md"]
+exclude = []
+
+[sonar]
+top_n = 20
+min_score = 0.05
+title_boost = 2.0
+path_boost = 1.5
+
+[judge]
+# The demo injects the offline stub judge (see [async].stub_judge below and
+# stub_judge.py), so no API key is needed. This documents the production default.
+model = "claude-opus-4-8"
+min_confidence = 0.6
+
+[ledger]
+# SHARED with the v1 demo so anti-nag state is the same one the v1 oracle uses.
+# run_async_demo.py wipes it before its in-process pass so the accounting oracle
+# stays deterministic regardless of what the detached child already recorded.
+path = "../demo/.lazarus/ledger.jsonl"
+
+[async]
+# Turn the v2 async path on for this demo.
+mode = "async"
+enabled = true
+# The pending-findings queue: the async twin of the ledger. Demo-local.
+pending_path = ".lazarus/pending.jsonl"
+# Spool dir for the launcher's wu-<run_id>.txt files and the detached runner's
+# per-run log files. Demo-local.
+spool_dir = ".lazarus/async"
+# Force the deterministic offline stub judge inside the background runner, so the
+# whole cycle runs with no anthropic package and no ANTHROPIC_API_KEY.
+stub_judge = true
+
+[async.pregate]
+# The optional synchronous shift-left gate is off for this demo.
+enabled = false
+min_confidence = 0.85
+max_candidates = 3

@@ -7,3 +7,8 @@ dist/
 .venv/
 *.egg
 HANDOFF.md
+*.pyc
+wu-*.txt
+log-*.txt
+spool/
+pending*.jsonl
