@@ -50,7 +50,7 @@ import json
 import os
 import sys
 import traceback
-from typing import Any, List
+from typing import Any, List, NoReturn
 
 HOOK_NAME = "lazarus.inject"
 HOOK_EVENT_NAME = "UserPromptSubmit"

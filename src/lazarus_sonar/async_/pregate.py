@@ -54,7 +54,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, NoReturn, Optional, Sequence
 
 # --------------------------------------------------------------------------- #
 # Repo layout anchors + import bootstrap.
@@ -360,7 +360,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         _ = _event_name(event)
         kind, work_unit = extract_planned_work_unit(event)
         if args.kind:
-            kind = args.kind
+            kind = args.kind  # noqa: F841  (CLI override kept; kind is advisory in the pre-gate)
 
     # ---- Load + validate config (fail-loud on misconfig, but still allow) -- #
     config_override = args.config or os.environ.get("LAZARUS_CONFIG")
