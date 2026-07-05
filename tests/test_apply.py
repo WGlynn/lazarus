@@ -76,6 +76,30 @@ def test_undo_with_nothing_to_revert(tmp_path):
     assert "nothing to undo" in r.reason
 
 
+def test_two_edits_same_file_undo_both_restores_original(tmp_path):
+    # Two edits to the SAME file applied back-to-back (same clock tick on coarse
+    # Windows resolution) must get DISTINCT backups, so undoing both restores the
+    # original byte-for-byte. Regression for the millisecond-stamp collision that
+    # silently broke `lazarus undo` when the auto-applier landed >1 edit per file.
+    f = tmp_path / "svc.py"
+    original = "a = 1\nb = 2\n"
+    f.write_text(original, encoding="utf-8")
+    undo_dir = tmp_path / "undo"
+
+    r1 = apply_fix({"edit": {"file": str(f), "find": "a = 1", "replace": "a = 10"}}, undo_dir=undo_dir)
+    r2 = apply_fix({"edit": {"file": str(f), "find": "b = 2", "replace": "b = 20"}}, undo_dir=undo_dir)
+    assert r1.applied and r2.applied
+    assert Path(r1.backup) != Path(r2.backup)  # distinct backups, no collision
+    assert f.read_text(encoding="utf-8") == "a = 10\nb = 20\n"
+
+    # LIFO: first undo reverts the second edit, second undo reverts the first.
+    assert undo_last(undo_dir).applied is True
+    assert f.read_text(encoding="utf-8") == "a = 10\nb = 2\n"
+    assert undo_last(undo_dir).applied is True
+    assert f.read_text(encoding="utf-8") == original
+    assert undo_last(undo_dir).applied is False  # nothing left
+
+
 def test_root_relative_path(tmp_path):
     (tmp_path / "svc.py").write_text("a\n", encoding="utf-8")
     r = apply_fix(

@@ -107,7 +107,7 @@ def _fix_field(finding: Any, name: str) -> Any:
     """Read a RetroFix field off a PendingFinding's `fix` dict, defensively.
 
     `finding.fix` is exactly `RetroFix.as_dict()` (rule_id, title, path, where,
-    patch, reason, confidence, sonar_score). We read via `.get` on the dict and
+    patch, reason, confidence, sonar_score, edit). We read via `.get` on the dict and
     fall back to a top-level attribute so a schema tweak or a hand-built finding
     in a test does not raise on the prompt path.
     """

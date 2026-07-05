@@ -60,6 +60,7 @@ WORK_UNIT_DIFF = DEMO / "work_unit.diff"
 EXPECTED_SURFACED = {"no-secrets-in-logs.md", "timeout-on-external-calls.md"}
 RETROFIX_KEYS = {
     "rule_id", "title", "path", "where", "patch", "reason", "confidence", "sonar_score",
+    "edit",
 }
 
 

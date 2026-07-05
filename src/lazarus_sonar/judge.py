@@ -46,8 +46,9 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
+from .apply import normalize_edit  # stdlib-only; the shared edit contract
 from .sonar import Candidate
 
 # The Anthropic SDK is an optional [judge] extra so SONAR and the ledger stay
@@ -155,6 +156,13 @@ class Verdict:
             surviving verdicts by a configurable ``min_confidence``.
         reason: One-sentence justification. For a False verdict this states why
             the rule is inert here; for a True verdict, what it would improve.
+        edit: The concrete, machine-applyable form of ``patch`` -- a
+            ``{"file", "find", "replace"}`` dict the auto-applier (apply.py) can
+            execute when ``find`` occurs exactly once in ``file``. ``None`` when
+            the judge could not (or would not) produce a uniquely-locatable edit;
+            such a verdict stays an advisory proposal (``patch`` prose only). This
+            is what turns a would-change verdict into an applied change rather than
+            just a suggestion -- see apply.apply_fix.
     """
 
     rule_id: str
@@ -163,6 +171,7 @@ class Verdict:
     patch: str
     confidence: float
     reason: str
+    edit: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +204,17 @@ and write a concrete patch, the answer is NO.
 the work. Do not reward a rule for being wise in general.
   * A rule that the work already satisfies is a NO -- nothing would change.
 
-You are proposing, not applying. Never assume your patch will be used; a human \
-reviews every YES.
+For every YES, also fill the ``edit`` object when you can make the change \
+machine-applyable: quote in ``find`` an EXACT substring of the finished work \
+that occurs EXACTLY ONCE, and give its ``replace``. That lets the tool apply the \
+fix automatically and reversibly. If you cannot quote a unique substring -- the \
+change is diffuse, spans multiple sites, or you would have to paraphrase -- set \
+``edit``'s three fields to the empty string and leave the concrete change in \
+``patch`` prose. A precise but conservative edit beats a broad guess: when in \
+doubt about uniqueness, leave ``edit`` empty.
+
+You are proposing, not asserting the edit is correct; every YES is reviewed and \
+every applied edit is backed up and reversible.
 """
 
 
@@ -321,8 +339,8 @@ def _verdict_item_schema() -> dict[str, Any]:
             "patch": {
                 "type": "string",
                 "description": (
-                    "A concrete proposed change to that span. A proposal only. "
-                    "Empty string when would_change is false."
+                    "A concrete proposed change to that span, in prose. A "
+                    "proposal only. Empty string when would_change is false."
                 ),
             },
             "confidence": {
@@ -336,6 +354,43 @@ def _verdict_item_schema() -> dict[str, Any]:
                     "true, what it would improve."
                 ),
             },
+            "edit": {
+                "type": "object",
+                "description": (
+                    "The machine-applyable form of the patch. Fill it ONLY when "
+                    "you can quote an exact substring of the finished work that "
+                    "occurs EXACTLY ONCE and give its replacement -- that lets the "
+                    "tool apply the fix automatically and reversibly. If you "
+                    "cannot locate a unique substring, set all three fields to the "
+                    "empty string and leave the fix as an advisory patch."
+                ),
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Path to the file to edit, as it appears in the work "
+                            "(e.g. a diff's target path). Empty string if none."
+                        ),
+                    },
+                    "find": {
+                        "type": "string",
+                        "description": (
+                            "The exact substring to replace. Must occur EXACTLY "
+                            "ONCE in the target file; if it is ambiguous or you "
+                            "cannot quote it verbatim, use the empty string."
+                        ),
+                    },
+                    "replace": {
+                        "type": "string",
+                        "description": (
+                            "The replacement text for `find`. Empty string deletes "
+                            "`find`; empty string with an empty `find` means no edit."
+                        ),
+                    },
+                },
+                "required": ["file", "find", "replace"],
+                "additionalProperties": False,
+            },
         },
         "required": [
             "rule_id",
@@ -344,6 +399,7 @@ def _verdict_item_schema() -> dict[str, Any]:
             "patch",
             "confidence",
             "reason",
+            "edit",
         ],
         "additionalProperties": False,
     }
@@ -472,6 +528,12 @@ def _coerce_verdict(raw: Any, *, index: int) -> Verdict:
     # Clamp into range; the schema does not enforce numeric bounds.
     confidence = max(0.0, min(1.0, confidence))
 
+    # An edit is applyable only if it names a file and a uniquely-locatable find.
+    # The schema always returns an `edit` object; normalize_edit collapses the
+    # all-empty "no concrete edit" sentinel to None so advisory verdicts stay
+    # proposals (patch prose only).
+    edit = normalize_edit(raw.get("edit"))
+
     return Verdict(
         rule_id=rule_id,
         would_change=would_change,
@@ -479,6 +541,7 @@ def _coerce_verdict(raw: Any, *, index: int) -> Verdict:
         patch=str(patch),
         confidence=confidence,
         reason=str(reason),
+        edit=edit,
     )
 
 
@@ -525,8 +588,9 @@ def judge_batch(
     """Ask the judge model whether each candidate would have changed the work.
 
     One batched Claude call for all candidates. Returns one RAW DICT per verdict
-    -- shape ``{"rule_id","would_change","where","patch","confidence","reason"}``
-    -- which is exactly what ``lazarus.Verdict.from_judge`` and the
+    -- shape ``{"rule_id","would_change","where","patch","confidence","reason",
+    "edit"}`` (``edit`` is a ``{file,find,replace}`` dict or ``None``) -- which is
+    exactly what ``lazarus.Verdict.from_judge`` and the
     ``lazarus.JudgeFn`` type consume. It does NOT return ``Verdict`` objects; the
     typed ``Verdict`` is used only as the schema-validated parse target and is
     converted to dicts before returning. LAZARUS owns the min_confidence filter

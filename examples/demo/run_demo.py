@@ -13,11 +13,16 @@ Expected result (deterministic, no API key, no network):
 
     2 SURFACED retroactive-fixes  -> no-secrets-in-logs.md, timeout-on-external-calls.md
     1 DECLINED (killed by judge)  -> prefer-f-strings.md
+    2 AUTO-APPLIED edits + undo   -> the two surfaced fixes carry concrete edits;
+                                     LAZARUS applies them to a throwaway copy of
+                                     the demo target file, then `lazarus undo`
+                                     restores it byte-for-byte.
 
 The script exits 0 and prints "DEMO PASSED" when it sees exactly that, and exits
 non-zero with a diff if anything drifts. That green/red exit is the point: this
-demo is an executable assertion over the whole cross-module pipeline, so if any
-interface in the package changes shape, this run goes red.
+demo is an executable assertion over the whole cross-module pipeline -- including
+the auto-apply half (surfaced fix -> concrete edit -> applied file -> undo) -- so
+if any interface in the package changes shape, this run goes red.
 
 What it exercises, end to end
 -----------------------------
@@ -38,6 +43,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 # --- make the package importable from a plain checkout ---------------------
@@ -52,6 +58,7 @@ for extra in (str(SRC), str(HERE)):
     if extra not in sys.path:
         sys.path.insert(0, extra)
 
+from lazarus_sonar.apply import apply_fix, undo_last  # noqa: E402
 from lazarus_sonar.config import load_config  # noqa: E402
 from lazarus_sonar.lazarus import run_lazarus  # noqa: E402
 from lazarus_sonar.ledger import Ledger  # noqa: E402
@@ -63,6 +70,12 @@ from stub_judge import stub_judge_fn  # noqa: E402  (added to sys.path above)
 CONFIG_PATH = HERE / "lazarus.config.toml"
 WORK_UNIT_PATH = HERE / "work_unit.diff"
 KIND = "diff"
+
+# The file the demo diff represents; the stub's edit `find`s are exact substrings
+# of it. Auto-apply runs against a throwaway COPY so this committed file is never
+# mutated (see _demo_autoapply).
+TARGET_FIXTURE = HERE / "target" / "service" / "upstream.py"
+TARGET_REL = Path("service") / "upstream.py"
 
 # The exact green oracle (see DECISION D-5 in the interface contract). These are
 # the rule_ids — POSIX-relative to the corpus root — the pipeline must surface
@@ -141,6 +154,63 @@ def _check(result) -> list[str]:
     return failures
 
 
+def _demo_autoapply(result) -> list[str]:
+    """Auto-apply every surfaced fix that carries a concrete edit, then undo it.
+
+    Proves the SECOND half of the tool end to end: LAZARUS doesn't just SURFACE a
+    fix, it APPLIES one that carries a concrete edit to a real file, reversibly.
+    Runs against a throwaway COPY of the demo target file in a temp dir, so the
+    committed fixture is never mutated. Returns human-readable assertion failures
+    (empty == passed), merged into the demo's overall green/red oracle.
+    """
+    failures: list[str] = []
+    appliable = [f for f in result.fixes if f.as_dict().get("edit")]
+
+    print("=" * 72)
+    print(f"AUTO-APPLY ({len(appliable)} of {len(result.fixes)} surfaced fixes "
+          f"carry a concrete, applyable edit):")
+    print("=" * 72)
+    if not appliable:
+        failures.append("no surfaced fix carried a concrete edit to auto-apply")
+        return failures
+
+    original = TARGET_FIXTURE.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        target = root / TARGET_REL
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(original, encoding="utf-8")
+        undo_dir = root / "undo"
+
+        applied = 0
+        for fix in appliable:
+            r = apply_fix(fix.as_dict(), undo_dir=undo_dir, root=root)
+            print(f"  {'APPLIED ' if r.applied else 'skipped '} {fix.rule_id}"
+                  f"{'' if r.applied else f'  ({r.reason})'}")
+            applied += 1 if r.applied else 0
+        if applied != len(appliable):
+            failures.append(f"expected {len(appliable)} edits applied, got {applied}")
+
+        after = target.read_text(encoding="utf-8")
+        if "timeout=5" not in after:
+            failures.append("the timeout edit did not land in the target file")
+        print()
+        print("  target file after auto-apply (excerpt): "
+              f"{'contains timeout=5' if 'timeout=5' in after else 'MISSING timeout=5'}")
+
+        # Reversibility: undo every applied edit and confirm a byte-for-byte restore.
+        reverted = 0
+        while undo_last(undo_dir).applied:
+            reverted += 1
+        restored = target.read_text(encoding="utf-8") == original
+        if not restored:
+            failures.append("`lazarus undo` did not restore the target byte-for-byte")
+        print(f"  `lazarus undo` reverted {reverted} edit(s); "
+              f"file restored to original: {'yes' if restored else 'NO'}")
+    print()
+    return failures
+
+
 def main() -> int:
     result = run()
 
@@ -173,7 +243,7 @@ def main() -> int:
           f"suppressed_declined={result.suppressed_declined}")
     print()
 
-    failures = _check(result)
+    failures = _check(result) + _demo_autoapply(result)
     if failures:
         print("=" * 72)
         print("DEMO FAILED - the pipeline did not produce the expected oracle:")

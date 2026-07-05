@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence
 
+from .apply import normalize_edit  # stdlib-only; the shared edit contract
 from .ledger import Ledger, work_unit_signature
 from .sonar import Candidate
 
@@ -79,6 +80,11 @@ class Verdict:
             a PROPOSAL only; LAZARUS never applies it.
         reason: The judge's one-line justification, kept for the ledger and for
             human review.
+        edit: The machine-applyable form of ``patch`` -- a ``{file, find,
+            replace}`` dict, or ``None`` when the fix is advisory-only. Passed
+            through to ``RetroFix.edit`` so the auto-applier (apply.py) can act on
+            it; ``None`` fixes stay proposals. Normalized via
+            ``apply.normalize_edit`` so an all-empty judge sentinel becomes None.
     """
 
     rule_id: str
@@ -87,6 +93,7 @@ class Verdict:
     where: str = ""
     patch: str = ""
     reason: str = ""
+    edit: Optional[dict] = None
 
     @classmethod
     def from_judge(cls, raw: dict[str, Any]) -> "Verdict":
@@ -96,6 +103,9 @@ class Verdict:
         the judge is a model and the schema constrains shape but not sanity.
         Raises on a missing ``rule_id`` because a verdict we cannot join back to
         a candidate is useless and silently dropping it would hide a judge bug.
+        The ``edit`` is normalized through the same ``apply.normalize_edit`` the
+        judge uses, so a stub or a hand-built raw verdict is held to the identical
+        concrete-vs-advisory rule.
         """
         rule_id = raw.get("rule_id")
         if not rule_id or not isinstance(rule_id, str):
@@ -111,6 +121,7 @@ class Verdict:
             where=str(raw.get("where", "") or ""),
             patch=str(raw.get("patch", "") or ""),
             reason=str(raw.get("reason", "") or ""),
+            edit=normalize_edit(raw.get("edit")),
         )
 
 
@@ -131,9 +142,17 @@ class RetroFix:
     reason: str
     confidence: float
     sonar_score: float
+    edit: Optional[dict] = None
 
     def as_dict(self) -> dict[str, Any]:
-        """Plain-dict view for JSON output and for the CLI/hook renderers."""
+        """Plain-dict view for JSON output and for the CLI/hook renderers.
+
+        ``edit`` is the ``{file, find, replace}`` dict the auto-applier reads
+        (via ``apply.edit_of``/``apply.apply_fix``), or ``None`` for an
+        advisory-only fix. It rides in this dict verbatim so the async pending
+        queue (which stores this exact payload) carries the applyable edit to the
+        runner's auto-apply step with no second lookup.
+        """
         return {
             "rule_id": self.rule_id,
             "title": self.title,
@@ -143,6 +162,7 @@ class RetroFix:
             "reason": self.reason,
             "confidence": self.confidence,
             "sonar_score": self.sonar_score,
+            "edit": self.edit,
         }
 
 
@@ -386,6 +406,7 @@ def run_lazarus(
                 reason=verdict.reason,
                 confidence=verdict.confidence,
                 sonar_score=candidate.score,
+                edit=verdict.edit,
             )
         )
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["ApplyResult", "apply_fix", "undo_last", "edit_of"]
+__all__ = ["ApplyResult", "apply_fix", "undo_last", "edit_of", "normalize_edit"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,29 @@ class ApplyResult:
     file: str
     reason: str
     backup: str = ""
+
+
+def normalize_edit(raw: Any) -> Optional[dict]:
+    """Coerce a raw edit into a concrete ``{file, find, replace}`` dict, or None.
+
+    This is the single definition of what makes an edit "concrete", shared by the
+    judge (judge.Verdict) and the v1 engine (lazarus.Verdict / RetroFix) so the two
+    can never disagree about which verdicts are applyable. An edit is concrete only
+    when it is a dict carrying a non-empty ``file`` AND a non-empty ``find`` -- the
+    two fields ``apply_fix`` needs to locate the target uniquely. Anything else
+    (missing, not a dict, empty file/find, all-empty sentinel) normalizes to None,
+    so a would-change verdict with no locatable edit stays an advisory proposal
+    rather than a guaranteed no-op apply. ``replace`` defaults to "" (a pure
+    deletion of ``find``). ``find`` is preserved verbatim -- whitespace in it is
+    significant to the unique-match check -- while ``file`` is stripped as a path.
+    """
+    if not isinstance(raw, dict):
+        return None
+    file = str(raw.get("file", "") or "").strip()
+    find = raw.get("find", "") or ""
+    if not file or not find:
+        return None
+    return {"file": file, "find": str(find), "replace": str(raw.get("replace", "") or "")}
 
 
 def edit_of(fix: Any) -> Optional[dict]:
@@ -79,7 +102,16 @@ def apply_fix(fix: Any, *, undo_dir: "Path | str", root: "Path | str | None" = N
 
     undo = Path(undo_dir)
     undo.mkdir(parents=True, exist_ok=True)
-    stamp = f"{int(time.time() * 1000)}"
+    # Integer-millisecond stamp, bumped forward to the next free value. Two edits
+    # to the SAME file within one clock tick (Windows wall-clock resolution can be
+    # ~16ms) would otherwise land on the same backup name -- the second write
+    # clobbers the first, and `undo` can no longer restore the pre-first-edit
+    # state. Bumping to the next free integer keeps each backup distinct AND keeps
+    # the 13-digit stamps sorting in application order, so undo_last (which reverts
+    # the lexicographically-last backup) reverts newest-first, as LIFO undo needs.
+    stamp = int(time.time() * 1000)
+    while (undo / f"{p.name}.{stamp}.bak").exists():
+        stamp += 1
     backup = undo / f"{p.name}.{stamp}.bak"
     backup.write_text(text, encoding="utf-8")
     (undo / f"{p.name}.{stamp}.json").write_text(

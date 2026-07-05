@@ -25,7 +25,7 @@ one holds; any drift prints the mismatch and exits 1.
   (b) Call run_background_audit in-process with the stub judge. Assert the v1
       oracle (2 surfaced = no-secrets-in-logs.md + timeout-on-external-calls.md,
       killed_by_judge == 1, below_confidence == 0), that read_unconsumed() returns
-      2 PendingFindings whose .fix round-trips RetroFix.as_dict() (8 keys) and
+      2 PendingFindings whose .fix round-trips RetroFix.as_dict() (9 keys) and
       whose .work_unit_sig == work_unit_signature(work_unit), and that this second
       pass adds 0 NEW surfaced lines (dedup, D-4) because it shares (a)'s signature.
   (c) Pipe UserPromptSubmit into hooks/async_inject.py. Assert valid JSON with
@@ -89,6 +89,7 @@ KIND = "diff"
 # RetroFix.as_dict() field set (contract section 1).
 RETROFIX_KEYS = {
     "rule_id", "title", "path", "where", "patch", "reason", "confidence", "sonar_score",
+    "edit",
 }
 
 

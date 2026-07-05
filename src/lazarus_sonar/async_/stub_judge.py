@@ -8,8 +8,9 @@ so ``--stub`` / ``[async].stub_judge = true`` works from a plain wheel with no
 ``anthropic`` package, no network, and no ``ANTHROPIC_API_KEY``.
 
 Its logic is a VERBATIM copy of the demo stub: the same ALLOW allowlist, the same
-``would_change = True @ 0.9`` / ``False @ 0.2`` verdicts, and the same returned
-dict shape (``lazarus.Verdict.from_judge``'s contract). A parity test
+``would_change = True @ 0.9`` / ``False @ 0.2`` verdicts, the same concrete
+``edit`` on each True verdict, and the same returned dict shape
+(``lazarus.Verdict.from_judge``'s contract). A parity test
 (``test_async_cycle.py::test_f_stub_parity`` and step (f) of the async demo)
 asserts this module and the demo file return byte-identical verdicts, so the two
 copies can never drift. The only difference from the demo file is the import
@@ -32,17 +33,24 @@ from typing import Any, Sequence
 from ..sonar import Candidate
 
 
-# rule_id substring -> (where, patch, reason). A candidate is judged
+# rule_id substring -> (where, patch, reason, edit). A candidate is judged
 # would_change=True@0.9 iff its rule_id contains one of these keys; otherwise it
 # is would_change=False@0.2. This allowlist IS the hand-encoded correct answer
 # for the demo diff: the two rules the diff actually violates, and nothing else.
-ALLOW: dict[str, tuple[str, str, str]] = {
+# ``edit`` is the concrete {file, find, replace} the auto-applier can execute;
+# each ``find`` is an exact, single-occurrence substring of the demo diff.
+ALLOW: dict[str, tuple[str, str, str, dict]] = {
     "no-secrets-in-logs": (
         "the logger.info line that interpolates api_key",
         "redact the key before logging: log a fingerprint (last 4 chars) or "
         "drop the api_key from the message entirely.",
         "the diff logs a secret; the rule forbids writing keys/tokens to a log "
         "sink, so it would have changed this line.",
+        {
+            "file": "service/upstream.py",
+            "find": 'logger.info(f"fetching profile for user {user_id} with api key {api_key}")',
+            "replace": 'logger.info(f"fetching profile for user {user_id}")',
+        },
     ),
     "timeout-on-external-calls": (
         "the requests.get(url, headers=headers) call",
@@ -50,6 +58,11 @@ ALLOW: dict[str, tuple[str, str, str]] = {
         "timeout=5), and decide what happens on timeout.",
         "the diff adds an outbound network call with no timeout, which can hang "
         "a worker forever; the rule would have changed this call.",
+        {
+            "file": "service/upstream.py",
+            "find": "requests.get(url, headers=headers)",
+            "replace": "requests.get(url, headers=headers, timeout=5)",
+        },
     ),
 }
 
@@ -63,7 +76,9 @@ def stub_judge_fn(
 
     Returns one raw verdict dict per candidate, in the same order. The dict shape
     is exactly what ``lazarus.Verdict.from_judge`` consumes:
-    ``{"rule_id", "would_change", "where", "patch", "confidence", "reason"}``.
+    ``{"rule_id", "would_change", "where", "patch", "confidence", "reason",
+    "edit"}`` (``edit`` is a ``{file, find, replace}`` dict on a True verdict,
+    ``None`` on a False one).
 
     Args:
         work_unit: the finished work being audited. Accepted to match the
@@ -81,7 +96,7 @@ def stub_judge_fn(
     for c in candidates:
         hit = next((v for k, v in ALLOW.items() if k in c.rule_id), None)
         if hit is not None:
-            where, patch, reason = hit
+            where, patch, reason, edit = hit
             out.append(
                 {
                     "rule_id": c.rule_id,
@@ -90,6 +105,7 @@ def stub_judge_fn(
                     "patch": patch,
                     "confidence": 0.9,
                     "reason": reason,
+                    "edit": edit,
                 }
             )
         else:
@@ -102,6 +118,7 @@ def stub_judge_fn(
                     "confidence": 0.2,
                     "reason": "on-topic but inert for this diff (the work already "
                     "satisfies the rule), so nothing would change.",
+                    "edit": None,
                 }
             )
     return out

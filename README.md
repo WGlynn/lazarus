@@ -106,7 +106,12 @@ an exact, unambiguous match is ever touched. A fix with no concrete edit, or who
 target text is missing or ambiguous, is surfaced as a proposal instead of forced,
 never guessed. Turn it off with `[apply] auto_apply = false` and auto-apply reverts
 to surface-only. (How much gets applied vs surfaced tracks how often the judge emits
-a concrete edit; that coverage is expanding.)
+a concrete edit. The judge's structured-output schema now requests a `{file, find,
+replace}` edit on every would-change verdict, and the edit threads end-to-end from
+the verdict to the applied file — the runnable demo and `tests/test_autoapply_e2e.py`
+prove that wire offline against the deterministic stub judge; how consistently the
+real model produces a uniquely-locatable edit on live work is the coverage that is
+still expanding.)
 
 ## Install
 
