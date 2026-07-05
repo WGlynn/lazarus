@@ -87,9 +87,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lazarus-sonar/lazarus-sonar"
-Repository = "https://github.com/lazarus-sonar/lazarus-sonar"
-Issues = "https://github.com/lazarus-sonar/lazarus-sonar/issues"
+Homepage = "https://github.com/WGlynn/lazarus"
+Repository = "https://github.com/WGlynn/lazarus"
+Issues = "https://github.com/WGlynn/lazarus/issues"
 
 [project.scripts]
 # The `lazarus` CLI. Shared entry point for humans (`lazarus sonar|audit|ledger`)

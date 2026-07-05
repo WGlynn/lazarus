@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9/3.10 exercise the tomli backport path; 3.11+ use stdlib tomllib.
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable) + tooling
+        # The offline suite needs no API key and no anthropic SDK: SONAR, the
+        # ledger, the config loader, and the stub judge are all stdlib-only.
+        run: python -m pip install --upgrade pip && pip install -e . pytest ruff
+
+      - name: Lint (ruff)
+        run: ruff check src/lazarus_sonar tests
+
+      - name: Tests (offline, no API key)
+        run: python -m pytest tests/ examples/async_demo/test_async_cycle.py -q
+
+      - name: Demos (objective green oracle, no API key)
+        run: |
+          python examples/demo/run_demo.py
+          python examples/async_demo/run_async_demo.py
