@@ -299,6 +299,19 @@ def run_background_audit(
         if _new_thr != _trigger_threshold:
             save_threshold(_trigger_path, _new_thr, reason=_reason)
 
+    # Auto-apply (default ON): apply any fix that carries a concrete, uniquely-
+    # locatable edit, reversibly (backup -> `lazarus undo`). Advisory-only fixes are
+    # left surfaced. No human in the path; the backup is the safety net, not a gate.
+    if getattr(config, "auto_apply", True):
+        from pathlib import Path
+
+        from ..apply import apply_fix
+
+        _undo_dir = Path(config.async_spool_dir) / "undo"
+        for _fix in result.fixes:
+            _fd = _fix.as_dict() if hasattr(_fix, "as_dict") else _fix
+            apply_fix(_fd, undo_dir=_undo_dir)
+
     return result
 
 

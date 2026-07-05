@@ -355,7 +355,7 @@ points. Three moving parts plus one optional gate:
    OFF). Runs a tightly-bounded synchronous Sonar+Lazarus on the *planned* action,
    surfacing only the highest-confidence rules to prevent rather than patch.
 
-It **proposes**, never auto-applies — the same contract as v1. And the whole cycle
+It **applies fixes automatically** by default (reversibly, via `lazarus undo`), the same contract as v1. And the whole cycle
 is offline-testable with the same deterministic stub judge the v1 demo uses, so it
 runs with no API key.
 

@@ -547,6 +547,22 @@ def _cmd_prime(args: argparse.Namespace, *, stdin: TextIO, stdout: TextIO) -> in
     return EXIT_OK
 
 
+def _cmd_undo(args: argparse.Namespace, *, stdout: TextIO) -> int:
+    """`lazarus undo` -- revert the most recent auto-applied edit from its backup."""
+    from pathlib import Path
+
+    from .apply import undo_last
+
+    config = _resolve_config(args)
+    undo_dir = Path(config.async_spool_dir) / "undo"
+    result = undo_last(undo_dir)
+    if result.applied:
+        stdout.write(f"Reverted {result.file} (restored from {result.backup}).\n")
+    else:
+        stdout.write(f"{result.reason}.\n")
+    return EXIT_OK
+
+
 def _cmd_audit(args: argparse.Namespace, *, stdin: TextIO, stdout: TextIO) -> int:
     """`lazarus audit` -- full SONAR -> LAZARUS retro-audit on a finished work-unit.
 
@@ -1032,6 +1048,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_work_unit_source_arguments(prime_parser)
     prime_parser.set_defaults(_handler="prime")
 
+    # -- undo -------------------------------------------------------------- #
+    undo_parser = subparsers.add_parser(
+        "undo",
+        help="Revert the most recent auto-applied edit (from its backup).",
+        description=(
+            "Auto-apply backs up every edit it makes; `undo` restores the most "
+            "recent one. The reversibility that makes automatic application safe."
+        ),
+    )
+    _add_config_arguments(undo_parser)
+    undo_parser.set_defaults(_handler="undo")
+
     # -- audit ------------------------------------------------------------- #
     audit_parser = subparsers.add_parser(
         "audit",
@@ -1231,6 +1259,8 @@ def _dispatch(
             return _cmd_sonar(args, stdin=stdin, stdout=stdout)
         if handler == "prime":
             return _cmd_prime(args, stdin=stdin, stdout=stdout)
+        if handler == "undo":
+            return _cmd_undo(args, stdout=stdout)
         if handler == "audit":
             return _cmd_audit(args, stdin=stdin, stdout=stdout)
         if handler == "ledger_show":

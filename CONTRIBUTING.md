@@ -27,7 +27,7 @@ CI runs the same across Python 3.9, 3.11, and 3.13. If the demos go red, a cross
 
 ## Principles worth knowing before you change things
 
-- **Lazarus proposes, it never applies.** No code path may auto-edit a user's files. Applying a fix is always a separate, explicit human step.
+- **Auto-apply is default-on, reversible, and conservative.** Lazarus applies a fix only when its edit matches the target exactly once, backing up the original for `lazarus undo`; missing, ambiguous, or advisory fixes are surfaced, never guessed. Any change to what gets applied must preserve reversibility (backup-before-write) and the unique-match guard, and must stay disableable via `[apply] auto_apply = false`.
 - **Sonar stays cheap and offline.** Keep the perception stage stdlib-only with no network. If you want to add an embedding recall stage, it goes behind the existing `score_file` seam as an option, not a hard dependency.
 - **The judge is the only expensive step.** Anything that changes how often it runs (see the `[async.trigger]` gate) must default to the current behavior and be opt-in.
 - **Additive over forking.** The v2 async path reuses the v1 engine rather than duplicating it. Keep that discipline: one engine, modes on top.

@@ -9,7 +9,8 @@ primitives, and memory in files. It works both ways from one corpus. Proactively
 it surfaces the buried-but-still-valid rules relevant to work you are about to do.
 Retroactively, it re-reads the work just finished and asks of each buried rule:
 would this have changed the output? It surfaces what matters as up-front context or
-as proposed fixes. It never edits your files.
+as proposals. It applies the fixes it can place unambiguously, reversibly (one
+`lazarus undo` restores any edit), and surfaces the rest.
 
 Two organs:
 
@@ -94,15 +95,18 @@ memory. It keeps buried-but-valid knowledge live, and it makes the agent
 self-audit its finished work against that knowledge instead of trusting that the
 right rule happened to be in context.
 
-## What it does not do
+## Applying fixes
 
-It surfaces and it proposes. It does not apply anything. Lazarus writes each
-retroactive fix to the ledger as `SURFACED` and stops. Nothing touches your files
-or the finished work. Applying a fix is a separate, human action, recorded with
-`lazarus ledger action`. There is no autoapply code path in v1 or v2, by design.
-Adding one is your call, not the tool's. v2 changes only *when* and *where* the
-audit runs (off the critical path, surfaced next turn); it does not change the
-propose-never-apply contract.
+Lazarus applies fixes automatically, by default. When a fix carries a concrete,
+uniquely-locatable edit, Lazarus applies it and backs up the original first, so a
+single `lazarus undo` reverts it. Automatic application is the default because the
+reward (a rule that would have been missed is instead honored, with no human in the
+loop and no latency) far outweighs the risk when every edit is reversible and only
+an exact, unambiguous match is ever touched. A fix with no concrete edit, or whose
+target text is missing or ambiguous, is surfaced as a proposal instead of forced,
+never guessed. Turn it off with `[apply] auto_apply = false` and auto-apply reverts
+to surface-only. (How much gets applied vs surfaced tracks how often the judge emits
+a concrete edit; that coverage is expanding.)
 
 ## Install
 
@@ -524,7 +528,7 @@ the entry shim is the checkout fallback.
 `additionalContext`, which is why the surfacing happens here. It reads
 `read_unconsumed()` (current-state `SURFACED`, newest run first), formats them as
 a human-readable block under a header that states clearly these are asynchronous
-retro-audit *proposals* from the previous turn, never applied, with a footer that
+retro-audit findings from the previous turn that were surfaced rather than auto-applied, with a footer that
 points at `lazarus ledger action/decline <sig> <rule_id>` in wording identical to
 the v1 renderer so the human hears one voice. It emits the context, then marks the
 findings consumed. This hook is fail-safe on everything: no findings, no queue,
@@ -738,8 +742,11 @@ Stated plainly, because the tool's honesty is the point:
 - **Anti-nag is signature-scoped, not semantic.** Two diffs that are conceptually
   the same but differ byte-for-byte are two signatures, so a rule declined for one
   can re-surface for the other. A semantic (not signature-scoped) mute is deferred.
-- **It proposes; it does not fix.** No autoapply path exists in v1 or v2. Every
-  "fix" is a proposal you apply and record by hand.
+- **It applies what it can place unambiguously; it surfaces the rest.** Auto-apply
+  (default on) applies a fix only when its edit matches the target exactly once,
+  backing up the original for `lazarus undo`. Advisory or ambiguous fixes are
+  surfaced, never forced. How much is applied vs surfaced tracks how often the judge
+  emits a concrete edit.
 - **Cost and latency.** Every audit is a Claude call. It is batched to one request
   per audit, but it is not free and it is not instant. v2 hides that latency behind
   the next turn instead of blocking on it, but it does not eliminate the cost. The

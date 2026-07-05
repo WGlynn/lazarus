@@ -326,6 +326,11 @@ class Config:
     # --- v2 async transport (additive; defaults to sync/all-defaults) ---
     async_: AsyncConfig = field(default_factory=AsyncConfig)
 
+    # Auto-apply (default ON): Lazarus applies fixes that carry a concrete, uniquely
+    # locatable edit, reversibly (every edit is backed up; `lazarus undo` reverts).
+    # Disable with [apply] auto_apply = false.
+    auto_apply: bool = True
+
     source_path: Path | None = field(default=None)
 
     # --- flat read-only accessors that lazarus.py, cli.py, and the hooks read --
@@ -571,6 +576,9 @@ def _build_config(raw: Mapping[str, Any], config_path: Path) -> Config:
         _optional_table(raw, "async", config_path), base_dir, config_path
     )
 
+    apply_table = _optional_table(raw, "apply", config_path)
+    auto_apply = _bool(apply_table.get("auto_apply", True), "apply.auto_apply", config_path)
+
     return Config(
         corpus_path=corpus_path,
         corpus_globs=corpus_globs,
@@ -579,6 +587,7 @@ def _build_config(raw: Mapping[str, Any], config_path: Path) -> Config:
         judge=judge,
         ledger=ledger,
         async_=async_,
+        auto_apply=auto_apply,
         source_path=config_path,
     )
 
