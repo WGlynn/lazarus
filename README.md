@@ -640,6 +640,13 @@ executable assertion over the v1 engine. Because the stub matches the real judge
 `JudgeFn` signature and verdict-dict shape, if any cross-module contract drifts,
 the demo goes red.
 
+Run it:
+
+```
+pip install -e .
+python examples/async_demo/run_async_demo.py   # launcher -> runner -> pending queue -> inject -> consume, offline, no API key
+```
+
 ## Examples
 
 `examples/demo/` is a runnable, credential-free proof that the whole pipeline
