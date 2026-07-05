@@ -1,0 +1,1 @@
+Optional shell wrapper mirroring v1's run_demo.sh: resolves its own dir, prefers python3 else python (exit 127 if neither), execs run_async_demo.py. One command, no arguments, no key. VERIFIED green under bash on Windows Git Bash.

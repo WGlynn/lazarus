@@ -1,26 +1,36 @@
 {
   "_lazarus_snippet": {
-    "what_this_is": "Copy-paste Claude Code settings.json fragment that wires Lazarus/Sonar into the three deterministic placements: a SessionStart Sonar sweep, a Stop + PostToolUse retro-audit, and an optional PreToolUse gate. This whole '_lazarus_snippet' object is documentation only - Claude Code ignores keys it does not recognize, so leaving it in place is harmless, but the block you actually merge is 'hooks' below.",
+    "what_this_is": "Copy-paste Claude Code settings.json fragment that wires Lazarus/Sonar into its deterministic placements. This whole '_lazarus_snippet' object is documentation only - Claude Code ignores keys it does not recognize, so leaving it in place is harmless, but the block you actually merge is 'hooks' below. There are TWO install modes and they are mutually exclusive at runtime: (1) the v1 SYNCHRONOUS path, which is the 'hooks' object below and is the DEFAULT this file ships wired; (2) the v2 ASYNCHRONOUS path, documented under '_optional_async_pipeline', which moves the judge-latency audit OFF the critical path. Pick ONE. Running both would double-audit the same work-unit.",
     "how_to_install": [
       "1. Set the hooks path prefix. Replace every occurrence of {{LAZARUS_HOME}} in this file with the absolute path to the directory that holds session_start_sweep.py and retro_audit.py (the repo's hooks/ directory). Use forward slashes on every OS - Claude Code accepts them on Windows too. Example: C:/tools/lazarus/hooks or /home/you/lazarus/hooks.",
       "2. Set the config path. Replace {{LAZARUS_CONFIG_FILE}} in the 'env' block below with the absolute path to YOUR lazarus.config.toml. Forward slashes on every OS. Do NOT assume the config sits one directory above hooks/ - it can live anywhere; point LAZARUS_CONFIG at it explicitly. Example: C:/tools/lazarus/lazarus.config.toml or /home/you/lazarus/lazarus.config.toml. See INSTALL_HOOKS.md for the full walkthrough.",
       "3. Merge the 'hooks' object below into your ~/.claude/settings.json (or a project .claude/settings.json). If you already have a 'hooks' key, merge per event: append the Lazarus entry to the existing SessionStart / Stop / PostToolUse / PreToolUse arrays rather than replacing them. Each event value is an array, so appending one more matcher-group object is always safe.",
       "4. How the config is discovered. Each hook reads lazarus.config.toml. The reliable path is the LAZARUS_CONFIG env var set in step 2 (present in the 'env' block below). If you leave LAZARUS_CONFIG unset, the hooks fall back to discovering lazarus.config.toml by walking up from the current working directory (find_config_path) - but the env var is the dependable path and is the one INSTALL_HOOKS.md tells you to set. Either way there is NO silent fallback to scanning your home directory, and a missing corpus.path or globs is a hard error (fail-loud).",
-      "5. Set ANTHROPIC_API_KEY in your environment for the Stop/PostToolUse retro-audit (the Lazarus judge). The SessionStart sweep is pure SONAR and needs no key. If the key is missing, the retro-audit prints a visible stderr error and exits without blocking your turn - it never wedges the session.",
-      "6. The PreToolUse gate is OPT-IN and commented-out-by-default (it lives under '_optional_pretooluse_gate' below, not under 'hooks'). It is the riskiest placement because it runs a judge call before a Write/Edit/Agent action. Only move it into 'hooks'.'PreToolUse' after reading INSTALL_HOOKS.md and deciding you want surface-and-judge before those actions. See '_optional_pretooluse_gate' for the ready-to-paste block."
+      "5. Set ANTHROPIC_API_KEY in your environment for the retro-audit judge (the Lazarus judge). The SessionStart sweep is pure SONAR and needs no key. In the SYNC path the judge runs on Stop/PostToolUse; in the ASYNC path it runs inside the detached background runner. If the key is missing, the judge prints a visible stderr error and exits without blocking - it never wedges the session. For a no-key install use the async path with [async].stub_judge=true (or the sync retro-audit's own stub), which runs the deterministic demo judge.",
+      "6. The PreToolUse gate is OPT-IN and commented-out-by-default (it lives under '_optional_pretooluse_gate' below, not under 'hooks'). It is the riskiest placement because it runs a judge call before a Write/Edit/Agent action. Only move it into 'hooks'.'PreToolUse' after reading INSTALL_HOOKS.md and deciding you want surface-and-judge before those actions. See '_optional_pretooluse_gate' for the ready-to-paste block.",
+      "7. ASYNC (v2) install. To move the audit off the critical path, do NOT use the 'hooks' object below. Instead follow '_optional_async_pipeline': add its 'env' key (LAZARUS_ASYNC=1) to your env block and use its 'hooks' object in place of the sync one. In async mode the launcher REPLACES retro_audit.py on Stop/PostToolUse (it spawns a detached runner and returns in ~ms), UserPromptSubmit surfaces last turn's findings, and the judge latency is hidden behind your next turn. See INSTALL_HOOKS.md and the [async] table in lazarus.config.toml."
     ],
     "fail_loud_contract": [
       "SessionStart (session_start_sweep.py): on missing config / missing corpus.path / missing globs / unreadable last-session work-unit, it prints a visible stderr error and exits non-zero. It does not silently emit empty output.",
-      "Stop and PostToolUse (retro_audit.py): same fail-loud on missing config/corpus/unparseable work-unit. The one deliberate carve-out: a judge/model/network error (including a missing ANTHROPIC_API_KEY at judge time) is printed loudly to stderr and the hook exits WITHOUT blocking the turn - it emits nothing on the Stop event's additionalContext channel (that channel is rejected on Stop), so a broken judge never wedges the session.",
-      "PreToolUse gate (optional): same fail-loud on config/corpus problems; a judge error surfaces loudly and defaults to allowing the action rather than blocking it."
+      "Stop and PostToolUse, SYNC path (retro_audit.py): same fail-loud on missing config/corpus/unparseable work-unit. The one deliberate carve-out: a judge/model/network error (including a missing ANTHROPIC_API_KEY at judge time) is printed loudly to stderr and the hook exits WITHOUT blocking the turn - it emits nothing on the Stop event's additionalContext channel (that channel is rejected on Stop), so a broken judge never wedges the session.",
+      "Stop and PostToolUse, ASYNC path (async_launcher.py): fail-LOUD on misconfig (bad/missing config) via the same _fail_loud (stderr + exit 2), but still non-blocking for the turn. An EMPTY extraction or a disabled mode is a quiet non-blocking no-op, NOT a loud error - the async path's prime directive is 'never wedge a turn', and a launcher that runs no SONAR and no judge has almost no failure surface. All judge/SONAR failure moves into the detached child.",
+      "Background runner (the detached child, async path): fail-LOUD to its own log file under [async].spool_dir/log-<run_id>.txt - exit 2 on misconfig/missing corpus, exit 3 on a judge fault. Because it is off the critical path, 'loud' means 'inspectable in the log', not 'on your console'. A judge fault simply yields no new pending lines that run - it degrades to silence.",
+      "UserPromptSubmit injection (async_inject.py): fail-SAFE always - any error (missing config, missing/corrupt queue, read failure) is a silent no-op with clean exit. It is on the user's prompt path and must NEVER wedge a keystroke. It is the one hook that deliberately swallows everything.",
+      "PreToolUse gate/pregate (optional, either path): same fail-loud on config/corpus problems; a judge error surfaces loudly and defaults to ALLOWING the action rather than blocking it."
     ],
     "placement_rationale": {
-      "SessionStart": "Runs a SONAR sweep over the last session's work-unit and prints buried-rule candidates as boot context. Wide, cheap, high-recall - the firehose stage. No judge, no API key.",
-      "Stop": "Runs the LAZARUS retro-audit on the just-finished response (the work-unit). This is the precision stage: it filters SONAR candidates through the would-it-have-changed-the-output judge and prints only surviving retroactive-fixes. It PROPOSES; it never edits files.",
-      "PostToolUse (matcher Edit|Write|NotebookEdit)": "Runs the same retro-audit against a just-written diff, so a buried rule can be surfaced against the concrete change rather than the whole turn.",
-      "PreToolUse (matcher Write|Edit|Agent, optional)": "Surfaces-and-judges relevant buried rules BEFORE the action. Highest value, highest risk - it can block. Ships opt-in."
+      "SessionStart": "Runs a SONAR sweep over the last session's work-unit and prints buried-rule candidates as boot context. Wide, cheap, high-recall - the firehose stage. No judge, no API key. Shared by both install modes (async does not change SessionStart).",
+      "Stop (sync)": "Runs the LAZARUS retro-audit on the just-finished response (the work-unit). This is the precision stage: it filters SONAR candidates through the would-it-have-changed-the-output judge and prints only surviving retroactive-fixes. It PROPOSES; it never edits files. In async mode this placement instead runs the non-blocking launcher.",
+      "PostToolUse (matcher Edit|Write|NotebookEdit)": "Runs the same retro-audit against a just-written diff, so a buried rule can be surfaced against the concrete change rather than the whole turn. In async mode this placement instead runs the non-blocking launcher with --kind diff.",
+      "UserPromptSubmit (async only)": "Reads pending findings the background runner produced during the previous turn, emits them on the additionalContext channel (the one event whose schema accepts it), then marks them consumed. Fail-safe: no findings, no queue, or any read error is a silent no-op. This is where the hidden-latency payoff is delivered: the model sees last turn's audit at the start of this turn, having paid zero on-path judge cost.",
+      "PreToolUse (matcher Write|Edit|Agent, optional)": "Surfaces-and-judges relevant buried rules BEFORE the action. Highest value, highest risk - it can block. Ships opt-in in both modes (async's variant is async_pregate.py, a tightly-bounded high-confidence-only scalpel)."
     },
-    "timeouts_note": "Timeouts are in SECONDS (Claude Code convention). SessionStart sweep is keyword-only and fast (20s cap). The retro-audit and the optional gate make one batched judge call, so they get a longer budget (60s / 45s). Tune to your corpus size and judge_model."
+    "sync_vs_async": {
+      "why_async": "The v1 sync path runs the audit as a BLOCKING Stop/PostToolUse hook, so every turn pays the judge-latency tax even when nothing is caught. v2 async moves the audit off the critical path: the launcher spawns a DETACHED runner and returns in single-digit ms, the runner runs the identical v1 engine (run_sonar_for_config -> run_lazarus -> ledger) concurrently with your next turn, writes survivors to an append-only pending queue, and UserPromptSubmit surfaces them at the top of the next prompt. Only real catches cost anything, and even those cost is hidden behind the turn you were going to take anyway.",
+      "mode_selection": "The [async].mode config key ('async' | 'sync') is the master switch. It auto-detects to 'async' when LAZARUS_ASYNC=1 is exported (which the async 'env' block below does) and 'sync' otherwise; a bare mode/enabled key overrides the auto-detect. In sync mode the async launcher is a no-op that emits the non-blocking payload and exits, so it is safe to wire the async hooks with mode='sync' and get exactly v1 behaviour. But the recommended install is to wire ONE path's hooks, not both.",
+      "engine_is_shared": "Both paths import and call the SAME engine (run_sonar_for_config, run_lazarus, Ledger, work_unit_signature, the judge, RetroFix/AuditResult) with the SAME arguments. The async runner is literally the sync hook's SONAR -> LAZARUS two lines plus a pending-queue drain. There is exactly one place that audits, one signature function, one Candidate type. v2 adds a transport, not a second engine."
+    },
+    "timeouts_note": "Timeouts are in SECONDS (Claude Code convention). SessionStart sweep is keyword-only and fast (20s cap). The SYNC retro-audit and the optional sync gate make one batched judge call, so they get a longer budget (60s / 45s). The ASYNC launcher only spawns-and-returns (no SONAR, no judge on-path), so it gets 10s; its 60s judge budget now lives inside the detached child, off the critical path. The async injection hook is a queue read and also gets 10s. The async pregate reintroduces a bounded on-path judge call deliberately and gets 30s."
   },
 
   "env": {
@@ -68,7 +78,7 @@
   },
 
   "_optional_pretooluse_gate": {
-    "note": "OPT-IN. To enable the gate, cut the 'PreToolUse' object below and paste it as a sibling of 'SessionStart' / 'Stop' / 'PostToolUse' inside the real 'hooks' object above. It runs retro_audit.py in gate mode (surface-and-judge before the action). It can block on a would-change verdict; a judge error defaults to allow, never to block. Read INSTALL_HOOKS.md first.",
+    "note": "OPT-IN, SYNC path. To enable the gate, cut the 'PreToolUse' object below and paste it as a sibling of 'SessionStart' / 'Stop' / 'PostToolUse' inside the real 'hooks' object above. It runs retro_audit.py in gate mode (surface-and-judge before the action). It can block on a would-change verdict; a judge error defaults to allow, never to block. Read INSTALL_HOOKS.md first. If you are running the ASYNC path instead, use the pregate under '_optional_async_pipeline' rather than this one.",
     "PreToolUse": [
       {
         "matcher": "Write|Edit|Agent",
@@ -82,5 +92,79 @@
         ]
       }
     ]
+  },
+
+  "_optional_async_pipeline": {
+    "note": "OPT-IN, v2 ASYNC path - the whole point of v2: move the judge-latency audit OFF the critical path. Do NOT run this alongside the SYNC 'hooks' object above; the two are mutually exclusive (running both double-audits the same work-unit). To switch to async: (1) add the 'env' key below (LAZARUS_ASYNC=1) to your top-level 'env' block so [async].mode auto-detects to 'async'; (2) REPLACE the 'hooks' object above with the 'hooks' object below (launcher on Stop/PostToolUse, injector on UserPromptSubmit). The launcher spawns a detached runner and returns in ~ms; the detached child runs the identical v1 engine concurrently with your next turn and writes survivors to the pending queue; UserPromptSubmit surfaces last turn's findings and marks them consumed. Timeouts are 10s (not 60s) because the launcher only spawns-and-returns - the 60s judge budget lives inside the detached child now. For a no-key install set [async].stub_judge=true in lazarus.config.toml; the launcher then passes --stub to the runner and the whole cycle runs with the deterministic demo judge and no ANTHROPIC_API_KEY.",
+    "env": {
+      "LAZARUS_ASYNC": "1"
+    },
+    "hooks": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python {{LAZARUS_HOME}}/session_start_sweep.py",
+              "timeout": 20,
+              "statusMessage": "Lazarus SONAR: sweeping buried rules over last session's work..."
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python {{LAZARUS_HOME}}/async_launcher.py --kind response",
+              "timeout": 10,
+              "statusMessage": "Lazarus (async): dispatching retro-audit off the critical path..."
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write|NotebookEdit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python {{LAZARUS_HOME}}/async_launcher.py --kind diff",
+              "timeout": 10,
+              "statusMessage": "Lazarus (async): dispatching diff retro-audit off the critical path..."
+            }
+          ]
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python {{LAZARUS_HOME}}/async_inject.py",
+              "timeout": 10,
+              "statusMessage": "Lazarus: surfacing last turn's retro-audit findings..."
+            }
+          ]
+        }
+      ]
+    },
+    "_optional_pretooluse_pregate": {
+      "note": "OPT-IN, ASYNC path pre-gate. Move this 'PreToolUse' object into the async 'hooks' object above to enable the synchronous high-confidence shift-left gate. It runs a tightly-bounded Sonar+Lazarus on the PLANNED action and surfaces ONLY findings at or above [async.pregate].min_confidence (default 0.85), capped at [async.pregate].max_candidates (default 3), with record=False so it never poisons the ledger for the async retro-audit that runs on the same work moments later. It surfaces context but defaults to ALLOW (never hard-blocks); a judge error also defaults to allow. Set [async.pregate].enabled = true in your config too, or the hook no-ops.",
+      "PreToolUse": [
+        {
+          "matcher": "Write|Edit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python {{LAZARUS_HOME}}/async_pregate.py --kind diff",
+              "timeout": 30,
+              "statusMessage": "Lazarus pregate: judging the planned action against buried rules..."
+            }
+          ]
+        }
+      ]
+    }
   }
 }

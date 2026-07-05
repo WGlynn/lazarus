@@ -13,6 +13,7 @@
 #   [sonar]   how the wide, cheap keyword search ranks candidate rules
 #   [judge]   the precision filter: which judge model runs, and its thresholds
 #   [ledger]  where the append-only SURFACED / ACTIONED / DECLINED log is kept
+#   [async]   (v2) run the audit OFF the critical path, behind the next turn
 #
 # Fail-loud contract: if [corpus].path or [corpus].globs is missing, the tool
 # raises a clear error and exits non-zero. There is NO silent fallback to
@@ -230,3 +231,136 @@ path = ".lazarus/ledger.jsonl"
 # temporarily audit everything the judge would surface regardless of prior
 # declines (e.g. when debugging judge calibration). Default true.
 suppress_declined = true
+
+
+# ============================================================================
+# [async]: run the audit OFF the critical path (v2)
+# ============================================================================
+# NEW IN v2. Everything above this line is the v1 engine and is UNCHANGED; an
+# existing v1 config that has no [async] table keeps loading and running exactly
+# as before, because an absent [async] table means "all defaults" and the
+# defaults are chosen so nothing turns on unless you wire the v2 hooks.
+#
+# What v2 changes: v1 runs the SONAR -> LAZARUS -> ledger audit as a BLOCKING
+# Stop / PostToolUse hook, so every operation pays the judge-latency tax even
+# when nothing is caught. v2 moves that same audit (same engine, same judge,
+# same ledger, same signatures) OFF the critical path:
+#
+#   1. A NON-BLOCKING LAUNCHER hook (Stop / PostToolUse) captures the finished
+#      work-unit, spawns a DETACHED background runner, and returns in ~ms.
+#   2. The BACKGROUND RUNNER (`lazarus-audit-bg`) runs the full v1 pipeline
+#      concurrently with your next turn and writes survivors to a pending
+#      queue (append-only JSONL, work-unit-signature keyed, dedup-safe).
+#   3. A NEXT-TURN INJECTION hook (UserPromptSubmit) surfaces the unconsumed
+#      findings as context, then marks them consumed. No findings -> silent.
+#   4. An OPTIONAL SHIFT-LEFT PRE-GATE hook (PreToolUse, [async.pregate]) runs
+#      a tightly-bounded synchronous check on the PLANNED action to prevent the
+#      rare, unambiguous, high-confidence violation before it is written.
+#
+# The two paths are mutually exclusive at runtime. In "async" mode the launcher
+# dispatches the runner and REPLACES v1's retro_audit.py on Stop / PostToolUse;
+# in "sync" mode the launcher is a no-op and v1's blocking retro-audit stays
+# authoritative. Do not wire both the v1 retro_audit hook AND the v2 launcher on
+# the same event, or you will double-audit. See hooks/settings.snippet.v2.json.
+#
+# The async path PROPOSES, never auto-applies, exactly like v1. It reuses the v1
+# engine unchanged (run_sonar_for_config, run_lazarus, the judge, the ledger,
+# work_unit_signature) and adds only a transport, so there is still exactly one
+# place that audits.
+[async]
+
+# Master switch: "async" or "sync".
+#   "async" runs the launcher + runner + inject pipeline (audit off the
+#           critical path, hidden behind your next turn).
+#   "sync"  makes the launcher a no-op so the v1 BLOCKING retro-audit path is
+#           authoritative. This is the v1 behaviour, unchanged.
+#
+# DEFAULT IS AUTO-DETECTED at load time. If you set NEITHER `mode` NOR `enabled`
+# below, the loader reads it from the environment: the v2 settings snippet
+# exports LAZARUS_ASYNC=1, so a config used with the v2 hooks auto-selects
+# "async", while the same config used without the v2 hooks stays "sync". Setting
+# `mode` (or `enabled`) explicitly OVERRIDES the auto-detect. Leaving the whole
+# [async] table out is equivalent to sync-with-auto-detect and keeps v1 configs
+# working untouched.
+mode = "async"
+
+# Convenience boolean, equivalent to `mode`. Exposed because a boolean reads
+# more cleanly in a settings file (`enabled = true`) than a string. If you set
+# BOTH `mode` and `enabled` they MUST agree (mode == "async" iff enabled ==
+# true); a config that sets both to disagree fails loud rather than silently
+# picking one. Default: mode == "async". Leave one of the two set, not both.
+enabled = true
+
+# Where the pending-findings queue (the async twin of the ledger) lives. This
+# is a SEPARATE file from [ledger].path and does a separate job: the ledger
+# records judge VERDICTS for anti-nag; the pending queue records SURFACED
+# findings AWAITING INJECTION and whether they were consumed. It is an
+# append-only JSONL keyed on the SAME (work_unit_sig, rule_id) pair the ledger
+# uses. Relative paths resolve against this config file's directory (same rule
+# as [ledger].path); the parent directory is created on first write. Default
+# ".lazarus/pending.jsonl".
+pending_path = ".lazarus/pending.jsonl"
+
+# Spool directory the launcher uses. It holds two things, both per-run and both
+# safe to delete when idle:
+#   - wu-<run_id>.txt : the extracted work-unit the launcher hands the detached
+#                       child by FILE (not a pipe: the parent hook has already
+#                       exited by the time the child reads it).
+#   - log-<run_id>.txt: the detached runner's stdout/stderr, so a background
+#                       crash is inspectable but never lands on your console.
+# Relative paths resolve against this config file's directory; created on first
+# use. Default ".lazarus/async". (v2 leaves these files on disk; a `lazarus
+# async gc` retention command is deferred to a later release.)
+spool_dir = ".lazarus/async"
+
+# Force the offline deterministic STUB judge in the background runner. This is
+# the SAME stub the v1 demo ships, wired through the SAME JudgeFn seam
+# run_lazarus already exposes, so the entire async cycle (launcher -> runner ->
+# pending queue -> inject) runs with NO `anthropic` package and NO API key. Set
+# true for CI or no-key installs where you want to exercise the transport
+# without spending tokens. Default false -> the runner uses the real judge,
+# exactly like the sync path. (The launcher propagates this to the child as the
+# `--stub` flag; you can also pass `--stub` to `lazarus-audit-bg` directly.)
+stub_judge = false
+
+
+# ----------------------------------------------------------------------------
+# [async.pregate]: the optional synchronous shift-left gate (PreToolUse)
+# ----------------------------------------------------------------------------
+# OPT-IN and DEFAULT OFF. This is the ONE place v2 puts a judge call back ON the
+# critical path, so it is deliberately narrow. It runs a tightly-bounded
+# synchronous SONAR + LAZARUS on the PLANNED action (the pending Write/Edit
+# args, before the tool runs) and surfaces ONLY the highest-confidence rules,
+# to PREVENT the rare unambiguous violation (for example, about to write a
+# logged secret) rather than patch it afterward.
+#
+# It never writes the pending queue and never records to the ledger
+# (record=False), so it cannot suppress or pre-empt the authoritative async
+# retro-audit that runs on the same work moments later on Stop / PostToolUse.
+# It surfaces context but defaults to ALLOW; a judge error also defaults to
+# allow (it never hard-blocks your action). A strict-blocking mode is deferred.
+#
+# To enable it you must BOTH set `enabled = true` here AND move the commented-
+# out PreToolUse block from hooks/settings.snippet.v2.json into your live hooks.
+# Turning it on here without wiring the hook does nothing; wiring the hook
+# without turning it on here makes the hook a no-op.
+[async.pregate]
+
+# Master switch for the pre-gate. Default false (off). The three narrowness
+# knobs below only matter when this is true.
+enabled = false
+
+# Confidence floor applied AFTER the judge: only findings at or above this are
+# surfaced by the pre-gate. Set HIGH on purpose (well above the judge's normal
+# `min_confidence` of 0.6) so that only near-certain "this WILL change the
+# output" verdicts fire, and the merely-plausible matches (the class that makes
+# shift-left gates noisy) are dropped. Range 0.0-1.0. Default 0.85.
+min_confidence = 0.85
+
+# Hard cap on candidates the pre-gate judges synchronously, applied BEFORE the
+# judge call. SONAR's shortlist is truncated to this many top-scoring rules, so
+# the on-path judge call is bounded to a tiny batch. This bounds both the
+# latency the gate deliberately reintroduces AND the noise (the deep tail of
+# SONAR recall never reaches the judge here). Kept tiny. Integer >= 1.
+# Default 3.
+max_candidates = 3
