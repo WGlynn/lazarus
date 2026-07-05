@@ -1,0 +1,21 @@
+[corpus]
+path = "./corpus"
+globs = ["**/*.md"]
+exclude = []
+[sonar]
+top_n = 20
+min_score = 0.05
+title_boost = 2.0
+path_boost = 1.5
+[judge]
+model = "claude-opus-4-8"
+min_confidence = 0.6
+[ledger]
+path = ".lazarus/ledger.jsonl"
+[async]
+mode = "async"
+pending_path = ".lazarus/pending.jsonl"
+spool_dir = ".lazarus/async"
+stub_judge = true
+[async.pregate]
+enabled = false

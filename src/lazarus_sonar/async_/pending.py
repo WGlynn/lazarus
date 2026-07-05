@@ -230,12 +230,22 @@ class PendingFinding:
         hook has the whole RetroFix view (rule_id/title/path/where/patch/reason/
         confidence/sonar_score) with no second lookup. ``rule_id`` is taken from
         the RetroFix so the pending key matches the ledger key for the same work.
+
+        One coercion: ``RetroFix.path`` is a ``pathlib.Path`` (the sync CLI/demo
+        renderers stringify it at print time via ``default=str``), but this dict
+        is serialized to a JSONL line with plain ``json.dumps`` and Path is not
+        JSON-serializable. The line schema documents ``fix.path`` as a ``str``,
+        so we normalize it here at the single point where the RetroFix crosses
+        into the queue, keeping ``to_json`` a pure dump and the on-disk invariant
+        (``path`` is a string) honored.
         """
+        payload = fix.as_dict()
+        payload["path"] = str(payload.get("path", ""))
         return cls(
             work_unit_sig=work_unit_sig,
             rule_id=fix.rule_id,
             kind=kind,
-            fix=fix.as_dict(),
+            fix=payload,
             run_id=run_id,
             event=SURFACED,
         )
