@@ -23,7 +23,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lazarus-sonar"
 version = "0.1.0"
-description = "Retroactive knowledge-audit for file-based agent memory: SONAR surfaces buried rules, LAZARUS judges whether applying one would have changed the finished work, and proposes fixes."
+description = "Preventative and retroactive knowledge-audit for file-based agent memory: SONAR surfaces buried rules, LAZARUS judges relevance. Surface the relevant rules before the work, or catch what a buried rule would have changed after it. Proposes, never edits."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

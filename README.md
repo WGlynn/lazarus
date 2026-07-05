@@ -4,11 +4,12 @@ Every memory, primitive, skill, rule, and hook you give an agent is a piece of h
 
 Lazarus takes the other side of the bet. Instead of trying to consult everything before the agent acts, it lets the work finish, then re-reads it and asks the buried rules a single question: would this one have changed the result? Only the rules that would actually change something ever surface.
 
-A retroactive-knowledge-audit tool for Claude Code and any agent that keeps its
-rules, primitives, and memory in files. It re-reads the work an agent just
-finished, finds the buried-but-still-valid rules that apply to it, and asks one
-question about each: would this rule have changed the output? It surfaces the
-survivors as proposed fixes. It never edits your files.
+A knowledge-audit tool for Claude Code and any agent that keeps its rules,
+primitives, and memory in files. It works both ways from one corpus. Proactively,
+it surfaces the buried-but-still-valid rules relevant to work you are about to do.
+Retroactively, it re-reads the work just finished and asks of each buried rule:
+would this have changed the output? It surfaces what matters as up-front context or
+as proposed fixes. It never edits your files.
 
 Two organs:
 
@@ -31,6 +32,28 @@ tax even when nothing is caught. v2 moves the audit off the critical path: a
 non-blocking launcher spawns a detached background runner, and the findings are
 surfaced on the next turn. The v1 sync path is untouched and stays authoritative
 when selected. See [v2: Concurrency (async retro-audit)](#v2-concurrency-async-retro-audit).
+
+## Proactive and retroactive
+
+The same engine runs in both directions, from one corpus. That balance is the point:
+preventative care and retroactive care, not half of either.
+
+- **Proactive (prevent).** `lazarus prime` points the recall at work you are *about*
+  to do (a prompt, a plan, a diff) and surfaces the relevant rules up front, so a
+  buried rule is available before the work, not after. The opt-in PreToolUse pre-gate
+  is the stricter form that warns on a high-confidence violation before the action runs.
+- **Retroactive (cure).** `lazarus audit` re-reads finished work and asks whether a
+  buried rule would have changed it, catching the miss after the fact.
+
+The retroactive verdicts (the ledger) can inform what to prime next, so the two
+directions feed each other rather than duplicating work.
+
+Honest boundary: if your rules fit in `CLAUDE.md`, use `CLAUDE.md`. Static context is
+simpler and just as good at small scale. Proactive Lazarus earns its place when the
+corpus outgrows what you can statically load every turn (the point at which a fixed
+context blob starts truncating), and its edge over a hand-rolled retrieval hook is
+that one corpus, one judge, and one ledger serve both directions with a feedback loop
+between them.
 
 ## The problem
 

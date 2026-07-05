@@ -486,6 +486,67 @@ def _cmd_sonar(args: argparse.Namespace, *, stdin: TextIO, stdout: TextIO) -> in
     return EXIT_OK
 
 
+def _render_prime_text(candidates) -> str:
+    """Priming render: relevant existing rules, framed for injection BEFORE work."""
+    if not candidates:
+        return "No existing rules look relevant to the upcoming work."
+    lines = [
+        "Relevant existing rules for the work you are about to do "
+        "(proactive recall, no judge):",
+        "",
+    ]
+    for i, c in enumerate(candidates, 1):
+        rid = getattr(c, "rule_id", None) or getattr(c, "name", "?")
+        score = getattr(c, "score", 0.0)
+        title = (getattr(c, "title", "") or "").strip()
+        lines.append(f"  {i}. {rid}  (score {score:.2f})")
+        if title and title != rid:
+            lines.append(f"       {title}")
+    lines += [
+        "",
+        "Surfaced up front so a buried rule is available before the work, not after. "
+        "This is recall, not a verdict; not every rule listed will apply.",
+    ]
+    return "\n".join(lines)
+
+
+def _cmd_prime(args: argparse.Namespace, *, stdin: TextIO, stdout: TextIO) -> int:
+    """`lazarus prime` -- PROACTIVE recall: surface the buried rules relevant to work
+    that is ABOUT to happen, so the agent is equipped up front instead of audited
+    after.
+
+    Same engine as `sonar` and the retro-audit, pointed at planned/upcoming work (a
+    prompt, a plan, a diff you are about to make) rather than finished work. It is
+    perception only: keyword + structural recall over the corpus, no ledger and no
+    judge, so it is cheap, offline, and dependency-free. Wire it on SessionStart /
+    UserPromptSubmit to prime context (see the proactive section of the README).
+    """
+    config = _resolve_config(args)
+    raw = _read_work_unit(from_stdin=args.stdin, file_path=args.file, stdin=stdin)
+    if args.stdin:
+        extracted = _extract_work_unit_from_hook_json(raw)
+        if extracted is not None:
+            raw = extracted
+    candidates = run_sonar_for_config(
+        raw,
+        config,
+        kind=getattr(args, "kind", "generic"),
+        top_n=getattr(args, "top_n", None),
+    )
+    if getattr(args, "json", False):
+        json.dump(
+            {"relevant_rules": [c.as_dict() for c in candidates]},
+            stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        stdout.write("\n")
+    else:
+        stdout.write(_render_prime_text(candidates))
+        stdout.write("\n")
+    return EXIT_OK
+
+
 def _cmd_audit(args: argparse.Namespace, *, stdin: TextIO, stdout: TextIO) -> int:
     """`lazarus audit` -- full SONAR -> LAZARUS retro-audit on a finished work-unit.
 
@@ -955,6 +1016,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_work_unit_source_arguments(sonar_parser)
     sonar_parser.set_defaults(_handler="sonar")
 
+    # -- prime ------------------------------------------------------------- #
+    prime_parser = subparsers.add_parser(
+        "prime",
+        help="Proactively surface the buried rules relevant to UPCOMING work.",
+        description=(
+            "Proactive recall: the preventative dual of `audit`. Points the SONAR "
+            "engine at work that is about to happen (a prompt, a plan, a diff you "
+            "are about to make) and surfaces the relevant existing rules up front, "
+            "so a buried rule is available before the work instead of caught after. "
+            "Perception only: no ledger, no judge, no API key."
+        ),
+    )
+    _add_config_arguments(prime_parser)
+    _add_work_unit_source_arguments(prime_parser)
+    prime_parser.set_defaults(_handler="prime")
+
     # -- audit ------------------------------------------------------------- #
     audit_parser = subparsers.add_parser(
         "audit",
@@ -1152,6 +1229,8 @@ def _dispatch(
     try:
         if handler == "sonar":
             return _cmd_sonar(args, stdin=stdin, stdout=stdout)
+        if handler == "prime":
+            return _cmd_prime(args, stdin=stdin, stdout=stdout)
         if handler == "audit":
             return _cmd_audit(args, stdin=stdin, stdout=stdout)
         if handler == "ledger_show":
