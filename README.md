@@ -406,7 +406,7 @@ ledger).
 
 Each line carries the whole finding, including `fix`, which is a verbatim
 `RetroFix.as_dict()` (rule_id, title, path, where, patch, reason, confidence,
-sonar_score). Storing the full dict means the injection hook needs no second
+sonar_score, edit). Storing the full dict means the injection hook needs no second
 lookup and no live `Config` to render: it reads the queue and formats. The line
 schema:
 

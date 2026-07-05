@@ -123,8 +123,9 @@ class PendingFinding:
 
     Payload:
         fix             exactly ``RetroFix.as_dict()`` (rule_id, title, path,
-                        where, patch, reason, confidence, sonar_score; path is a
-                        str). Stored whole so the injection hook renders without a
+                        where, patch, reason, confidence, sonar_score, edit; path
+                        is a str, edit is a {file,find,replace} dict or None).
+                        Stored whole so the injection hook renders without a
                         second lookup and without a live Config. Empty on a
                         CONSUMED line (the SURFACED line already holds it).
     """

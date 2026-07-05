@@ -106,9 +106,9 @@ def apply_fix(fix: Any, *, undo_dir: "Path | str", root: "Path | str | None" = N
     # to the SAME file within one clock tick (Windows wall-clock resolution can be
     # ~16ms) would otherwise land on the same backup name -- the second write
     # clobbers the first, and `undo` can no longer restore the pre-first-edit
-    # state. Bumping to the next free integer keeps each backup distinct AND keeps
-    # the 13-digit stamps sorting in application order, so undo_last (which reverts
-    # the lexicographically-last backup) reverts newest-first, as LIFO undo needs.
+    # state. Bumping to the next free integer only needs to keep each backup
+    # DISTINCT; undo_last orders backups by their numeric stamp (not by filename),
+    # so newest-first LIFO holds regardless of stamp digit-width.
     stamp = int(time.time() * 1000)
     while (undo / f"{p.name}.{stamp}.bak").exists():
         stamp += 1
@@ -121,10 +121,32 @@ def apply_fix(fix: Any, *, undo_dir: "Path | str", root: "Path | str | None" = N
     return ApplyResult(True, str(p), "applied", str(backup))
 
 
+def _backup_stamp(meta_path: Path) -> int:
+    """The integer millisecond stamp embedded in a backup meta filename.
+
+    Backup metas are named ``{target_name}.{stamp}.json``; the stamp is the
+    second-to-last dot-segment. Parsed to an int so undo_last orders backups
+    NUMERICALLY (newest == largest stamp) instead of lexicographically. A
+    filename sort silently mis-orders the moment stamps change digit-width (e.g.
+    the ms clock rolling from 13 to 14 digits ~year 2286), which would make undo
+    revert the oldest edit instead of the newest. An unparseable name sorts first
+    (treated as oldest), never crashing the revert.
+    """
+    try:
+        return int(meta_path.name.rsplit(".", 2)[-2])
+    except (ValueError, IndexError):
+        return -1
+
+
 def undo_last(undo_dir: "Path | str") -> ApplyResult:
-    """Revert the most recent auto-applied edit from its backup."""
+    """Revert the most recent auto-applied edit from its backup.
+
+    "Most recent" is the largest backup stamp, ordered numerically rather than by
+    filename, so undo is reliable LIFO across the whole undo dir independent of
+    the target filename or the stamp's digit-width.
+    """
     undo = Path(undo_dir)
-    metas = sorted(undo.glob("*.json"))
+    metas = sorted(undo.glob("*.json"), key=lambda m: (_backup_stamp(m), m.name))
     if not metas:
         return ApplyResult(False, "", "nothing to undo")
     meta = json.loads(metas[-1].read_text(encoding="utf-8"))

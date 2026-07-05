@@ -51,7 +51,7 @@ new corpus here), so the async transport is exercised against the identical orac
 - **(b)** Call `run_background_audit` in-process with the stub judge. Assert the v1
   oracle (2 surfaced = `no-secrets-in-logs.md` + `timeout-on-external-calls.md`,
   `killed_by_judge == 1`, `below_confidence == 0`), that `read_unconsumed()`
-  returns 2 findings whose `.fix` round-trips `RetroFix.as_dict()` (8 keys) and
+  returns 2 findings whose `.fix` round-trips `RetroFix.as_dict()` (9 keys, incl. `edit`) and
   whose `.work_unit_sig == work_unit_signature(work_unit)`, and that this pass adds
   **0 new** surfaced lines (dedup, D-4).
 - **(c)** Pipe `UserPromptSubmit` into `hooks/async_inject.py`. Assert valid JSON
