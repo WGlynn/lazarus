@@ -225,11 +225,15 @@ def run_background_audit(
             _trigger_threshold = load_threshold(
                 _trigger_path, default=_trig.base_threshold
             )
+        # RSI finding (2026-07-05): shadow sampling only earns its extra judge calls
+        # when the adaptive controller is present to CONSUME the recall signal.
+        # Without adaptive it is pure cost, so gate it on adaptive.
+        _eff_shadow = _trig.shadow_epsilon if _trig.adaptive else 0.0
         _policy = TriggerPolicy(
             base_threshold=_trigger_threshold,
             risk=RiskProfile(high_risk_multiplier=_trig.high_risk_multiplier),
             max_judge_candidates=_trig.max_judge_candidates,
-            shadow_epsilon=_trig.shadow_epsilon,
+            shadow_epsilon=_eff_shadow,
         )
         _decision = _policy.decide(candidates, work_unit)
         _shadow_this_run = _decision.shadow
@@ -273,7 +277,7 @@ def run_background_audit(
 
         if _shadow_this_run:
             _shadow_surfaced, _shadow_total = record_shadow(
-                _shadow_path, surfaced=bool(result.fixes)
+                _shadow_path, surfaced=bool(result.fixes), decay=0.98
             )
         else:
             _shadow_surfaced, _shadow_total = load_shadow_stats(_shadow_path)

@@ -379,23 +379,35 @@ def save_threshold(
     )
 
 
-def load_shadow_stats(path: "Path | str") -> Tuple[int, int]:
-    """(shadow_surfaced, shadow_total) for below-bar units that were force-judged."""
+def load_shadow_stats(path: "Path | str") -> Tuple[float, float]:
+    """(shadow_surfaced, shadow_total) for below-bar units that were force-judged.
+
+    Floats, because record_shadow can DECAY history into a moving estimate so the
+    recall signal reflects recent behaviour rather than a lifetime average that goes
+    unresponsive as the total grows.
+    """
     p = Path(path)
     if not p.exists():
-        return 0, 0
+        return 0.0, 0.0
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return int(data.get("shadow_surfaced", 0)), int(data.get("shadow_total", 0))
+        return float(data.get("shadow_surfaced", 0.0)), float(data.get("shadow_total", 0.0))
     except (json.JSONDecodeError, ValueError, OSError):
-        return 0, 0
+        return 0.0, 0.0
 
 
-def record_shadow(path: "Path | str", surfaced: bool) -> Tuple[int, int]:
-    """Increment the shadow-sample counters, returning the new (surfaced, total)."""
+def record_shadow(
+    path: "Path | str", surfaced: bool, decay: float = 1.0
+) -> Tuple[float, float]:
+    """Update the shadow-sample counters, returning the new (surfaced, total).
+
+    ``decay`` in (0, 1] downweights the prior counts before adding this sample, so
+    the recall estimate tracks RECENT behaviour instead of a lifetime average that
+    stops responding once the total is large. decay=1.0 is a plain lifetime count.
+    """
     shadow_surfaced, shadow_total = load_shadow_stats(path)
-    shadow_surfaced += 1 if surfaced else 0
-    shadow_total += 1
+    shadow_surfaced = shadow_surfaced * decay + (1.0 if surfaced else 0.0)
+    shadow_total = shadow_total * decay + 1.0
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(

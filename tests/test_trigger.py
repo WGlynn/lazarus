@@ -202,3 +202,17 @@ def test_shadow_stats_persistence(tmp_path):
     assert record_shadow(p, surfaced=True) == (1, 1)
     assert record_shadow(p, surfaced=False) == (1, 2)
     assert load_shadow_stats(p) == (1, 2)
+
+
+def test_shadow_decay_tracks_recent_not_lifetime(tmp_path):
+    # RSI fix: lifetime-cumulative shadow stats go unresponsive; decay keeps the recall
+    # estimate tracking RECENT behaviour. A lifetime average here would sit near 0.5.
+    p = tmp_path / "shadow.json"
+    for _ in range(10):
+        record_shadow(p, surfaced=True, decay=0.8)
+    s1, t1 = load_shadow_stats(p)
+    assert s1 / t1 > 0.9
+    for _ in range(10):
+        record_shadow(p, surfaced=False, decay=0.8)
+    s2, t2 = load_shadow_stats(p)
+    assert s2 / t2 < 0.3
